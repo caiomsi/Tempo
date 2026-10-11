@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tempo: plan the time you have</title>
+  <meta name="description" content="A private task planner that checks whether your work fits the hours you have.">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%23b5532c' stroke-width='3'/%3E%3Cpath d='M16 8v8l5 3' fill='none' stroke='%23b5532c' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="./" aria-label="Tempo home">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="13"/><path d="M16 8v8l5 3"/></svg>
+        <span>Tempo</span>
+      </a>
+      <div class="topbar-actions">
+        <label class="sr-only" for="period-select">Period</label>
+        <select id="period-select" class="period-select" hidden></select>
+        <button class="icon-btn" id="theme-btn" type="button" aria-label="Toggle theme" title="Theme (t)"></button>
+        <details class="menu" id="menu">
+          <summary class="icon-btn" aria-label="Menu" title="Menu">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
+          </summary>
+          <div class="menu-pop" role="menu">
+            <button type="button" data-action="new-period" role="menuitem">New period…</button>
+            <button type="button" data-action="edit-period" role="menuitem">Edit this period…</button>
+            <button type="button" data-action="close-period" role="menuitem">Close period &amp; roll over…</button>
+            <hr>
+            <button type="button" data-action="export" role="menuitem">Export backup (JSON)</button>
+            <button type="button" data-action="import" role="menuitem">Import backup…</button>
+            <button type="button" data-action="sample" role="menuitem">Load sample data</button>
+            <hr>
+            <button type="button" data-action="help" role="menuitem">Shortcuts &amp; syntax</button>
+            <button type="button" data-action="reset" role="menuitem" class="danger">Erase everything…</button>
+          </div>
+        </details>
+        <input type="file" id="import-file" accept="application/json,.json" hidden>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap" id="app">
+    <!-- First run -->
+    <section class="onboard" id="onboard" hidden>
+      <p class="eyebrow">Start here</p>
+      <h1 class="display">How much time do you <em>actually</em> have?</h1>
+      <p class="lede">Pick a period and the total hours you can work in it. Then list your tasks with an estimate for each. Tempo shows whether everything fits and which tasks fall below the line.</p>
+      <div class="onboard-actions">
+        <button class="btn btn-primary" type="button" data-action="new-period">Plan a period</button>
+        <button class="btn" type="button" data-action="sample">Try it with sample data</button>
+      </div>
+    </section>
+
+    <!-- Dashboard: clock on the left, categorized tasks on the right -->
+    <div class="layout" id="dashboard" hidden>
+      <aside class="clock-panel" aria-label="Time left">
+        <div class="period-head">
+          <div>
+            <p class="eyebrow" id="period-dates"></p>
+            <h1 class="period-name" id="period-name"></h1>
+          </div>
+          <button class="btn btn-ghost btn-sm" type="button" data-action="edit-period">Edit</button>
+        </div>
+
+        <div class="clock" id="clock">
+          <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+            <circle class="ring-bg" cx="60" cy="60" r="52"/>
+            <circle class="ring-fg" id="clock-ring" cx="60" cy="60" r="52"/>
+          </svg>
+          <div class="ring-text">
+            <span class="clock-label" id="clock-label">left to work</span>
+            <span class="clock-time" id="clock-time">0:00:00</span>
+            <span class="clock-sub" id="clock-sub"></span>
+          </div>
+        </div>
+
+        <div class="now" id="now"></div>
+
+        <div class="fit">
+          <div class="fit-row">
+            <span class="status-pill" id="sum-status"></span>
+            <span class="fit-need" id="fit-need"></span>
+          </div>
+          <div class="meter" id="meter" role="img" aria-label="">
+            <div class="meter-track">
+              <span class="meter-used" id="meter-used"></span>
+              <span class="meter-rem" id="meter-rem"></span>
+              <span class="meter-over" id="meter-over"></span>
+            </div>
+            <span class="meter-cap" id="meter-cap"></span>
+            <span class="meter-real" id="meter-real" hidden></span>
+          </div>
+          <div class="meter-legend">
+            <span><i class="sw sw-used"></i>Worked</span>
+            <span><i class="sw sw-rem"></i>To do</span>
+            <span><i class="sw sw-over"></i>Over</span>
+            <span class="lg-real" id="lg-real" hidden><i class="sw sw-real"></i>Realistic</span>
+          </div>
+        </div>
+
+        <dl class="stats">
+          <div><dt>Pace</dt><dd id="st-pace">–</dd><small id="st-pace-sub"></small></div>
+          <div><dt>Your estimates</dt><dd id="st-acc">–</dd><small id="st-acc-sub"></small></div>
+        </dl>
+      </aside>
+
+      <section class="board" aria-label="Tasks">
+        <form class="dump" id="dump" autocomplete="off">
+          <label class="dump-label" for="dump-input">Tell Tempo what you need to do</label>
+          <div class="dump-box">
+            <textarea id="dump-input" rows="2" placeholder="e.g. Study for the calc quiz 2 hours by friday, write essay draft 3h, buy groceries, gym 1 hour, reply to client emails 30 min"></textarea>
+            <div class="dump-actions">
+              <button class="icon-btn mic" type="button" id="mic" aria-label="Dictate" title="Dictate" hidden>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              </button>
+              <button class="btn btn-primary btn-sm" type="submit" id="dump-submit">Sort it</button>
+            </div>
+          </div>
+          <ul class="dump-preview" id="dump-preview" aria-live="polite"></ul>
+        </form>
+
+        <div class="toolbar">
+          <div class="seg" role="group" aria-label="Show">
+            <button type="button" class="seg-btn is-on" data-filter="open">To do</button>
+            <button type="button" class="seg-btn" data-filter="done">Done</button>
+            <button type="button" class="seg-btn" data-filter="all">All</button>
+          </div>
+          <p class="nofit-note" id="nofit-note" hidden></p>
+          <label class="sr-only" for="search">Search tasks</label>
+          <input id="search" class="search" type="search" placeholder="Search  /">
+        </div>
+
+        <div class="groups" id="groups"></div>
+        <p class="empty" id="empty" hidden></p>
+      </section>
+    </div>
+  </main>
+
+  <!-- Focus mode -->
+  <section class="focus" id="focus" hidden aria-modal="true" role="dialog" aria-labelledby="focus-title">
+    <div class="focus-inner">
+      <p class="eyebrow">Focusing on</p>
+      <h2 class="focus-title" id="focus-title"></h2>
+      <div class="ring-wrap">
+        <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+          <circle class="ring-bg" cx="60" cy="60" r="52"/>
+          <circle class="ring-fg" id="ring-fg" cx="60" cy="60" r="52"/>
+        </svg>
+        <div class="ring-text">
+          <span class="focus-clock" id="focus-clock">0:00:00</span>
+          <span class="focus-of" id="focus-of"></span>
+        </div>
+      </div>
+      <p class="pomo-line" id="pomo-line" hidden></p>
+      <div class="focus-actions">
+        <button class="btn btn-primary" type="button" id="focus-toggle">Start</button>
+        <button class="btn" type="button" id="focus-done">Mark done</button>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="pomo-toggle">
+        <span>Pomodoro: 25 min work / 5 min break</span>
+      </label>
+      <button class="focus-exit" type="button" id="focus-exit">Exit focus <kbd>Esc</kbd></button>
+    </div>
+  </section>
+
+  <!-- Period dialog -->
+  <dialog class="dialog" id="period-dialog">
+    <form method="dialog" id="period-form">
+      <h2 class="dialog-title" id="period-dialog-title">New period</h2>
+      <label class="field"><span>Name</span><input name="name" required maxlength="60" placeholder="This week"></label>
+      <div class="field-row">
+        <label class="field"><span>Starts</span><input name="start" type="date" required></label>
+        <label class="field"><span>Ends</span><input name="end" type="date" required></label>
+      </div>
+      <label class="field"><span>Total hours you can work in this period</span><input name="budget" required inputmode="decimal" placeholder="20h"></label>
+      <p class="hint">Be honest. Count the hours you'll really spend working on these tasks, not every hour you're awake.</p>
+      <div class="dialog-actions">
+        <button class="btn" type="button" value="cancel" data-close>Cancel</button>
+        <button class="btn btn-primary" type="submit" value="save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Task dialog -->
+  <dialog class="dialog" id="task-dialog">
+    <form method="dialog" id="task-form">
+      <h2 class="dialog-title">Edit task</h2>
+      <label class="field"><span>Task</span><input name="title" required maxlength="140"></label>
+      <div class="field-row">
+        <label class="field"><span>Estimate</span><input name="est" inputmode="decimal" placeholder="1h 30m"></label>
+        <label class="field"><span>Time logged</span><input name="logged" inputmode="decimal" placeholder="0m"></label>
+      </div>
+      <div class="field-row">
+        <label class="field"><span>Priority</span>
+          <select name="priority"><option value="high">High</option><option value="med">Medium</option><option value="low">Low</option></select>
+        </label>
+        <label class="field"><span>Due</span><input name="due" type="date"></label>
+      </div>
+      <label class="field"><span>Category</span><input name="category" maxlength="30" list="cat-list" placeholder="School"></label>
+      <datalist id="cat-list"></datalist>
+      <label class="field"><span>Notes</span><textarea name="notes" rows="3" maxlength="2000"></textarea></label>
+      <div class="dialog-actions">
+        <button class="btn btn-danger" type="button" id="task-delete">Delete</button>
+        <span class="spacer"></span>
+        <button class="btn" type="button" data-close>Cancel</button>
+        <button class="btn btn-primary" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Close-period dialog -->
+  <dialog class="dialog" id="close-dialog">
+    <form method="dialog" id="close-form">
+      <h2 class="dialog-title">Close <span id="close-name"></span></h2>
+      <dl class="recap" id="recap"></dl>
+      <p class="recap-note" id="recap-note"></p>
+      <h3 class="dialog-sub">Next period</h3>
+      <label class="field"><span>Name</span><input name="name" required maxlength="60"></label>
+      <div class="field-row">
+        <label class="field"><span>Starts</span><input name="start" type="date" required></label>
+        <label class="field"><span>Ends</span><input name="end" type="date" required></label>
+      </div>
+      <label class="field"><span>Hours budget</span><input name="budget" required inputmode="decimal"></label>
+      <label class="check-field"><input type="checkbox" name="carry" checked> <span id="carry-label">Carry over unfinished tasks</span></label>
+      <div class="dialog-actions">
+        <button class="btn" type="button" data-close>Cancel</button>
+        <button class="btn btn-primary" type="submit">Close &amp; start next</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Help dialog -->
+  <dialog class="dialog" id="help-dialog">
+    <div>
+      <h2 class="dialog-title">Shortcuts &amp; quick-add</h2>
+      <table class="help">
+        <tr><td><kbd>n</kbd></td><td>New tasks (jump to the input)</td></tr>
+        <tr><td><kbd>f</kbd></td><td>Focus on the top task</td></tr>
+        <tr><td><kbd>/</kbd></td><td>Search</td></tr>
+        <tr><td><kbd>t</kbd></td><td>Switch theme</td></tr>
+        <tr><td><kbd>?</kbd></td><td>This help</td></tr>
+      </table>
+      <h3 class="dialog-sub">Talking to Tempo</h3>
+      <p class="hint">Write or dictate the way you'd say it. Separate tasks with commas, new lines or "and". Each task can mention:</p>
+      <table class="help">
+        <tr><td><code>2 hours</code> <code>45 min</code> <code>an hour and a half</code></td><td>How long it'll take (30m if you leave it out)</td></tr>
+        <tr><td><code>urgent</code> <code>important</code> <code>if I have time</code></td><td>Priority (or <code>!high</code> / <code>!low</code>)</td></tr>
+        <tr><td><code>by friday</code> <code>tomorrow</code> <code>by 10/17</code></td><td>Due date</td></tr>
+        <tr><td><code>#work</code> or a line like <code>School:</code></td><td>Force a category</td></tr>
+      </table>
+      <p class="hint" style="margin-top:10px">If you leave the category out, Tempo picks one from the wording. Drag a task to another category (or change it in the task's editor) and Tempo learns from that.</p>
+      <h3 class="dialog-sub">How the clock works</h3>
+      <p class="hint">The clock starts at your period's budget and counts down while you run a task timer. Tasks marked done without a timer count their estimate as time spent. Tasks are ranked by priority. Those lower down that don't fit into the time left are labelled <em>won't fit</em>.</p>
+      <div class="dialog-actions">
+        <button class="btn btn-primary" type="button" data-close>Got it</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="js/main.js"></script>
+</body>
+</html>
