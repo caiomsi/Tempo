@@ -1,7 +1,7 @@
 # CLAUDE.md
 
-Tempo is a **personal productivity app**, not a marketing site. It's **local only**
-(no remote, not deployed) by Caio's choice. See the root `../CLAUDE.md` for shared
+Tempo is a **personal productivity app**, not a marketing site. Live at **https://tempo.caiomsi.com**
+(GitHub Pages, repo `caiomsi/Tempo`; data still stays in each browser). See the root `../CLAUDE.md` for shared
 conventions.
 
 ## What it does

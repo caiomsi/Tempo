@@ -13,5 +13,5 @@ It then checks them against the hours you actually have.
   estimate-accuracy tracking.
 - Your data stays in this browser. Use **⋯ → Export backup** now and then.
 
-Run it: `python3 -m http.server` in this folder, then open http://localhost:8000.
+Live at **https://tempo.caiomsi.com**. To run it locally: `python3 -m http.server` in this folder, then open http://localhost:8000.
 Press `?` in the app for shortcuts and the input syntax.
