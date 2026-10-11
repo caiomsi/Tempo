@@ -12,6 +12,12 @@ conventions.
   The thin inner ring is the planned work still to do, drawn red past the point where
   it no longer fits. There are hour ticks around the edge and the status badge sits on
   the dial face. Below it: the current or next task, pace, and estimate accuracy.
+- **Pop-out mini timer** (the button next to Edit, or `p`): in Chrome and Edge,
+  Document Picture-in-Picture opens a small always-on-top window (`setupMiniWindow`,
+  `MINI_HTML`, `.mini*` CSS) with the dial plus Start/Pause/Done. Elsewhere, such as
+  Safari, `drawMiniCanvas` paints the timer onto a canvas, which floats as a
+  video-PiP; its play/pause button toggles the task timer through `mediaSession`.
+  `dialData(m)` is the math shared by the main dial and the mini timer.
 - **Right panel ("board"):** a plain-language brain-dump input with dictation, and
   the tasks grouped by **category**.
 - The cutoff is computed globally. Open tasks are ranked by priority, then `order`,

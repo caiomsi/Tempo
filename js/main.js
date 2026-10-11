@@ -529,35 +529,50 @@
     el.style.strokeDashoffset = (-start).toFixed(3);
   }
 
+  // Shared numbers for the main dial and the pop-out mini timer.
+  function dialData(m) {
+    var leftMs = m.left * 60000, over = leftMs < 0;
+    var secs = over ? Math.ceil(-leftMs / 1000) : Math.floor(leftMs / 1000);
+    var b = m.budget > 0 ? m.budget : 1;
+    var leftPct = Math.max(m.left, 0) / b * 100;
+    var fits = Math.min(m.remaining, Math.max(m.left, 0));
+    return {
+      over: over, leftPct: leftPct, workPct: fits / b * 100, overPct: (m.remaining - fits) / b * 100,
+      hm: (over ? '+' : '') + Math.floor(secs / 3600) + ':' + pad(Math.floor(secs / 60) % 60),
+      sec: ':' + pad(secs % 60), label: over ? 'over budget' : 'left to work'
+    };
+  }
+  function currentTask(p) {
+    var running = state.running && taskById(state.running.taskId);
+    if (running && running.periodId === p.id) return { task: running, running: true };
+    var next = openTasks(p.id)[0];
+    return next ? { task: next, running: false } : null;
+  }
+
   function renderClock(p, m) {
     var dial = $('#clock');
     if (!dial) return;
-    var leftMs = m.left * 60000, over = leftMs < 0;
-    var running = state.running && taskById(state.running.taskId);
-    dial.classList.toggle('is-over', over);
-    dial.classList.toggle('is-running', !!(running && running.periodId === p.id));
+    var d = dialData(m);
+    var cur = currentTask(p);
+    dial.classList.toggle('is-over', d.over);
+    dial.classList.toggle('is-running', !!(cur && cur.running));
     drawTicks(m.budget);
-
-    var secs = over ? Math.ceil(-leftMs / 1000) : Math.floor(leftMs / 1000);
-    setText('#clock-label', over ? 'over budget' : 'left to work');
-    setText('#clock-hm', (over ? '+' : '') + Math.floor(secs / 3600) + ':' + pad(Math.floor(secs / 60) % 60));
-    setText('#clock-sec', ':' + pad(secs % 60));
+    setText('#clock-label', d.label);
+    setText('#clock-hm', d.hm);
+    setText('#clock-sec', d.sec);
     setText('#clock-sub', 'of ' + fmt(m.budget) + ' · ' + fmt(m.used) + ' worked');
-
-    var b = m.budget > 0 ? m.budget : 1;
-    var leftPct = Math.max(m.left, 0) / b * 100;
-    arc($('#dial-left'), 0, leftPct);
-    var fits = Math.min(m.remaining, Math.max(m.left, 0));
-    arc($('#dial-work'), 0, fits / b * 100);
-    arc($('#dial-over'), leftPct, (m.remaining - fits) / b * 100);
+    arc($('#dial-left'), 0, d.leftPct);
+    arc($('#dial-work'), 0, d.workPct);
+    arc($('#dial-over'), d.leftPct, d.overPct);
     var knob = $('#dial-knob');
     if (knob) {
-      var a = Math.min(leftPct, 100) / 100 * 2 * Math.PI;
+      var a = Math.min(d.leftPct, 100) / 100 * 2 * Math.PI;
       knob.setAttribute('cx', (100 + 84 * Math.sin(a)).toFixed(2));
       knob.setAttribute('cy', (100 - 84 * Math.cos(a)).toFixed(2));
     }
     setText('#lg-left', m.left >= 0 ? fmt(m.left) : '−' + fmt(-m.left));
     setText('#lg-work', fmt(m.remaining));
+    renderMini(p, m, d, cur);
   }
 
   function renderNow(p, m) {
@@ -723,6 +738,7 @@
     var mode = state.settings.theme;
     if (mode === 'light' || mode === 'dark') document.documentElement.setAttribute('data-theme', mode);
     else document.documentElement.removeAttribute('data-theme');
+    syncMiniTheme();
     var btn = $('#theme-btn');
     if (btn) {
       btn.innerHTML = mode === 'light' ? ICON.sun : mode === 'dark' ? ICON.moon : ICON.auto;
@@ -1050,6 +1066,181 @@
     return true;
   }
 
+  // ---------- Pop-out mini timer ----------
+  // Chrome/Edge: Document Picture-in-Picture gives a real always-on-top window with buttons.
+  // Elsewhere (Safari): draw the timer onto a canvas and float it as a video, controlled
+  // with the video's own play/pause.
+  var mini = { win: null, video: null, canvas: null };
+  var MINI_HTML =
+    '<div class="mini" id="mini">' +
+      '<div class="mini-dial">' +
+        '<svg viewBox="0 0 120 120" aria-hidden="true"><g transform="rotate(-90 60 60)">' +
+          '<circle class="dial-track" cx="60" cy="60" r="52" pathLength="100"/>' +
+          '<circle class="dial-left" data-m="left" cx="60" cy="60" r="52" pathLength="100"/>' +
+          '<circle class="dial-work-track" cx="60" cy="60" r="42" pathLength="100"/>' +
+          '<circle class="dial-work" data-m="work" cx="60" cy="60" r="42" pathLength="100"/>' +
+          '<circle class="dial-over" data-m="over" cx="60" cy="60" r="42" pathLength="100"/>' +
+        '</g></svg>' +
+        '<div class="mini-face"><span class="mini-time"><span data-m="hm"></span><span class="clock-sec" data-m="sec"></span></span>' +
+        '<span class="clock-label" data-m="label"></span></div>' +
+      '</div>' +
+      '<div class="mini-side">' +
+        '<span class="now-label" data-m="state"></span>' +
+        '<span class="mini-title" data-m="title"></span>' +
+        '<span class="mini-meta" data-m="meta"></span>' +
+        '<div class="mini-btns">' +
+          '<button type="button" class="btn btn-primary btn-sm" data-mini="toggle"></button>' +
+          '<button type="button" class="btn btn-sm" data-mini="done">Done</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+
+  function miniCanPop() {
+    return !!(window.documentPictureInPicture || (document.pictureInPictureEnabled && HTMLCanvasElement.prototype.captureStream));
+  }
+
+  function togglePopout() {
+    if (mini.win) { mini.win.close(); return; }
+    if (mini.video && document.pictureInPictureElement) { document.exitPictureInPicture(); return; }
+    if (window.documentPictureInPicture) openDocPip();
+    else if (document.pictureInPictureEnabled && HTMLCanvasElement.prototype.captureStream) openVideoPip();
+    else toast('This browser can’t pop out a floating timer. Try Chrome or Edge.');
+  }
+
+  function openDocPip() {
+    window.documentPictureInPicture.requestWindow({ width: 360, height: 168 }).then(function (win) {
+      setupMiniWindow(win);
+      win.addEventListener('pagehide', function () { mini.win = null; updatePopBtn(); });
+    }).catch(function () { toast('Couldn’t open the floating timer'); });
+  }
+
+  function setupMiniWindow(win) {
+    mini.win = win;
+    var doc = win.document;
+    // Bring the page's fonts and styles into the little window.
+    $$('link[rel="stylesheet"], style').forEach(function (el) { doc.head.appendChild(el.cloneNode(true)); });
+    doc.title = 'Tempo';
+    doc.body.className = 'mini-body';
+    doc.body.innerHTML = MINI_HTML;
+    syncMiniTheme();
+    doc.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-mini]');
+      if (b) miniAction(b.dataset.mini);
+    });
+    doc.addEventListener('keydown', function (e) { if (e.key === ' ') { e.preventDefault(); miniAction('toggle'); } });
+    updatePopBtn();
+    render();
+  }
+
+  function openVideoPip() {
+    if (!mini.canvas) {
+      mini.canvas = document.createElement('canvas');
+      mini.canvas.width = 640; mini.canvas.height = 300;
+      mini.video = document.createElement('video');
+      mini.video.muted = true; mini.video.playsInline = true;
+      mini.video.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;bottom:0;left:0';
+      document.body.appendChild(mini.video);
+      mini.video.srcObject = mini.canvas.captureStream(4);
+      mini.video.addEventListener('leavepictureinpicture', function () { updatePopBtn(); });
+      // The floating video's play/pause button starts and stops the task timer.
+      var viaSession = false;
+      try {
+        navigator.mediaSession.setActionHandler('play', function () { miniAction('toggle'); });
+        navigator.mediaSession.setActionHandler('pause', function () { miniAction('toggle'); });
+        viaSession = true;
+      } catch (e) { /* not supported: fall back to the video's own pause event */ }
+      if (!viaSession) mini.video.addEventListener('pause', function () {
+        if (document.pictureInPictureElement === mini.video) { miniAction('toggle'); mini.video.play(); }
+      });
+    }
+    render();
+    mini.video.play().then(function () { return mini.video.requestPictureInPicture(); })
+      .then(function () { updatePopBtn(); })
+      .catch(function () { toast('Couldn’t open the floating timer'); });
+  }
+
+  function miniAction(action) {
+    var p = activePeriod(), cur = p && currentTask(p);
+    if (!cur) { toast('No open tasks'); return; }
+    if (action === 'toggle') toggleTimer(cur.task.id);
+    else if (action === 'done') setDone(cur.task.id, true);
+  }
+
+  function syncMiniTheme() {
+    if (!mini.win) return;
+    var root = mini.win.document.documentElement, t = document.documentElement.getAttribute('data-theme');
+    if (t) root.setAttribute('data-theme', t); else root.removeAttribute('data-theme');
+  }
+
+  function updatePopBtn() {
+    var btn = $('#pop-btn');
+    if (!btn) return;
+    var open = !!mini.win || !!(mini.video && document.pictureInPictureElement === mini.video);
+    btn.classList.toggle('is-on', open);
+    btn.setAttribute('aria-label', open ? 'Close floating timer' : 'Pop out floating timer');
+    btn.title = (open ? 'Close floating timer' : 'Pop out timer') + ' (p)';
+  }
+
+  function renderMini(p, m, d, cur) {
+    if (mini.win) {
+      var doc = mini.win.document;
+      var q = function (k) { return doc.querySelector('[data-m="' + k + '"]'); };
+      var root = doc.getElementById('mini');
+      if (!root) return;
+      root.classList.toggle('is-over', d.over);
+      root.classList.toggle('is-running', !!(cur && cur.running));
+      arc(q('left'), 0, d.leftPct); arc(q('work'), 0, d.workPct); arc(q('over'), d.leftPct, d.overPct);
+      q('hm').textContent = d.hm; q('sec').textContent = d.sec; q('label').textContent = d.label;
+      q('state').textContent = cur ? (cur.running ? 'Working on' : 'Up next') : 'All clear';
+      q('title').textContent = cur ? cur.task.title : 'Nothing left to do';
+      q('meta').textContent = cur ? fmt(loggedMin(cur.task)) + ' of ' + fmt(cur.task.estMin) + ' · ' + cur.task.category : '';
+      var tb = doc.querySelector('[data-mini="toggle"]'), db = doc.querySelector('[data-mini="done"]');
+      tb.textContent = cur && cur.running ? 'Pause' : 'Start';
+      tb.disabled = db.disabled = !cur;
+    }
+    if (mini.canvas) drawMiniCanvas(d, cur);
+  }
+
+  function drawMiniCanvas(d, cur) {
+    var c = mini.canvas, x = c.getContext('2d'), cs = getComputedStyle(document.documentElement);
+    var v = function (n) { return cs.getPropertyValue(n).trim(); };
+    var W = c.width, H = c.height;
+    x.fillStyle = v('--surface'); x.fillRect(0, 0, W, H);
+    var cx = 150, cy = H / 2, start = -Math.PI / 2;
+    var ring = function (r, w, color, from, pct) {
+      if (pct <= 0) return;
+      x.beginPath(); x.lineWidth = w; x.lineCap = 'round'; x.strokeStyle = color;
+      x.arc(cx, cy, r, start + from / 100 * 2 * Math.PI, start + Math.min(from + pct, 100) / 100 * 2 * Math.PI);
+      x.stroke();
+    };
+    ring(115, 18, v('--surface-2'), 0, 100);
+    ring(115, 18, d.over ? v('--bad') : v('--accent'), 0, d.leftPct);
+    ring(92, 5, v('--line'), 0, 100);
+    ring(92, 5, v('--ink'), 0, d.workPct);
+    ring(92, 5, v('--bad'), d.leftPct, d.overPct);
+    x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.fillStyle = d.over ? v('--bad') : v('--ink');
+    x.font = '400 64px "Instrument Serif", Georgia, serif';
+    x.fillText(d.hm, cx, cy - 6);
+    x.fillStyle = v('--ink-3');
+    x.font = '500 17px "Geist Mono", monospace';
+    x.fillText(d.label.toUpperCase(), cx, cy + 40);
+    x.textAlign = 'left';
+    x.fillText((cur ? (cur.running ? 'WORKING ON' : 'UP NEXT') : 'ALL CLEAR'), 300, 105);
+    x.fillStyle = v('--ink');
+    x.font = '500 30px Geist, system-ui, sans-serif';
+    var title = cur ? cur.task.title : 'Nothing left to do';
+    while (title.length > 3 && x.measureText(title).width > 320) title = title.slice(0, -2);
+    if (cur && title !== cur.task.title) title = title.trim() + '…';
+    x.fillText(title, 300, 145);
+    x.fillStyle = v('--ink-2');
+    x.font = '400 21px Geist, system-ui, sans-serif';
+    if (cur) x.fillText(fmt(loggedMin(cur.task)) + ' of ' + fmt(cur.task.estMin), 300, 182);
+    x.fillStyle = v('--ink-3');
+    x.font = '400 16px Geist, system-ui, sans-serif';
+    x.fillText(cur && cur.running ? '❚❚ pause to stop the clock' : '▶ play to start the clock', 300, 222);
+  }
+
   // ---------- Focus mode ----------
   function openFocus(id) {
     var t = id ? taskById(id) : null;
@@ -1283,6 +1474,12 @@
       if (menu && menu.open && !e.target.closest('#menu')) closeMenu();
     });
 
+    var popBtn = $('#pop-btn');
+    if (popBtn) {
+      if (miniCanPop()) popBtn.addEventListener('click', togglePopout);
+      else popBtn.hidden = true;
+    }
+
     var themeBtn = $('#theme-btn');
     if (themeBtn) themeBtn.addEventListener('click', cycleTheme);
 
@@ -1394,6 +1591,7 @@
       if (e.key === 'n' && p) { e.preventDefault(); var i = $('#dump-input'); if (i) i.focus(); }
       else if (e.key === '/' && p) { e.preventDefault(); var s = $('#search'); if (s) s.focus(); }
       else if (e.key === 'f' && p) { e.preventDefault(); openFocus(); }
+      else if (e.key === 'p' && p) togglePopout();
       else if (e.key === 't') cycleTheme();
       else if (e.key === '?') { var h = $('#help-dialog'); if (h) h.showModal(); }
     });
@@ -1408,7 +1606,7 @@
   }
 
   // Exposed for the test harness only.
-  window.__tempo = { parseDump: parseDump, classify: classify, parseDuration: parseDuration };
+  window.__tempo = { parseDump: parseDump, classify: classify, parseDuration: parseDuration, setupMiniWindow: setupMiniWindow, mini: mini };
 
   bind();
   setupMic();

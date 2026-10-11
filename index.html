@@ -71,7 +71,12 @@
             <p class="eyebrow" id="period-dates"></p>
             <h1 class="period-name" id="period-name"></h1>
           </div>
-          <button class="btn btn-ghost btn-sm" type="button" data-action="edit-period">Edit</button>
+          <div class="head-btns">
+            <button class="icon-btn pop-btn" id="pop-btn" type="button" aria-label="Pop out floating timer" title="Pop out timer (p)">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16a1 1 0 0 1 1 1v6h-2V7H5v10h6v2H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><rect x="13" y="13" width="9" height="7" rx="1.2"/></svg>
+            </button>
+            <button class="btn btn-ghost btn-sm" type="button" data-action="edit-period">Edit</button>
+          </div>
         </div>
 
         <div class="dial" id="clock">
@@ -241,6 +246,7 @@
         <tr><td><kbd>n</kbd></td><td>New tasks (jump to the input)</td></tr>
         <tr><td><kbd>f</kbd></td><td>Focus on the top task</td></tr>
         <tr><td><kbd>/</kbd></td><td>Search</td></tr>
+        <tr><td><kbd>p</kbd></td><td>Pop out a floating timer that stays on top of other apps</td></tr>
         <tr><td><kbd>t</kbd></td><td>Switch theme</td></tr>
         <tr><td><kbd>?</kbd></td><td>This help</td></tr>
       </table>
