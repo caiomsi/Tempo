@@ -119,7 +119,7 @@
     return NUM[w] != null ? NUM[w] : null;
   }
   var NUMW = '(\\d+(?:[.,]\\d+)?|an?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty(?:[- ]five)?|fifty|sixty|ninety|(?:a\\s+)?couple(?:\\s+of)?|(?:a\\s+)?few)';
-  var LEAD = '(?:\\b(?:which|that|it)\\s+)?(?:(?:for|takes?|taking|will\\s+take|should\\s+take|it\'?ll\\s+take|about|around|roughly|approx(?:imately)?|like|~)\\s*)*';
+  var LEAD = '(?:\\b(?:which|that|it|this)\\s+)?(?:(?:for|takes?|taking|(?:(?:would|will|should|might|could|may|it\'?ll)\\s+|(?:is|are|it\'?s)\\s+(?:gonna|going\\s+to)\\s+|gonna\\s+)(?:probably\\s+|likely\\s+|only\\s+)?take|about|around|roughly|approx(?:imately)?|like|~|maybe|probably|only|just)\\s*)*';
   var HRS = '(?:h|hrs?|hours?)';
   var MINS = '(?:m|mins?|minutes?)';
   var DURATIONS = [
@@ -205,15 +205,41 @@
   }
 
   var LEAD_IN = /^(?:(?:and|also|then|plus|oh|so|ok|okay|um|uh|first|next|lastly|finally)[,:]?\s+)*(?:i\s+|we\s+)?(?:also\s+|really\s+|still\s+|definitely\s+)?(?:(?:need|needs|have|has|got|want|going)\s+to\s+|gotta\s+|gonna\s+|must\s+|should\s+|wanna\s+|'ll\s+|will\s+|remember\s+to\s+|don'?t\s+forget\s+to\s+|i'?ve\s+got\s+to\s+|i'?ll\s+)+/i;
-  var TRAIL = /\s+(?:and|which|that|it|will|should|takes?|for|about|around|by|on|due|to|the|also|then|plus|maybe|like|with|probably)$/i;
-  function cleanTitle(s) {
-    s = s.replace(/\s+/g, ' ').trim();
+  var TRAIL = /\s+(?:and|which|that|it|is|are|will|would|should|takes?|for|about|around|by|on|due|to|the|also|then|plus|maybe|like|with|probably)$/i;
+  // Words that name a piece of work. "a quiz for my business class" → "Business class quiz".
+  var TASK_NOUN = '(?:quiz(?:zes)?|tests?|exams?|midterms?|finals?|essays?|papers?|homework|hw|assignments?|projects?|reports?|presentations?|labs?|worksheets?|readings?|problem\\s+sets?|psets?|discussion\\s+posts?|posts?|reflections?|study\\s+guides?|notes|slides|decks?|proposals?|applications?|reviews?|summar(?:y|ies)|outlines?|drafts?|lectures?|chapters?|questions|exercises?|modules?|case\\s+stud(?:y|ies)|research|flashcards|portfolio|resume|cover\\s+letter|forms?|invoices?)';
+  var WEAK_VERB = /^(?:do(?:ing)?|finish(?:ing)?|complete|completing|work(?:ing)?\s+on|get\s+done|take|taking|start(?:\s+on)?|knock\s+out|get\s+started\s+on|deal\s+with)\s+/i;
+  var DETERMINERS = /\b(?:a|an|the|my|our|his|her|their|some|this|these|those)\s+(?=\S)/gi;
+  var FILLER = /\b(?:real\s+quick|quickly|or\s+so|i\s+think|probably|basically|actually|just|kind\s+of|sort\s+of|at\s+some\s+point|as\s+well|too)\b/gi;
+
+  function tidy(s) {
     var prev;
     do {
       prev = s;
       s = s.replace(LEAD_IN, '').replace(/^to\s+/i, '').replace(/^[\s,.;:!?\-–—]+|[\s,.;:!?\-–—(]+$/g, '').replace(TRAIL, '').trim();
     } while (s !== prev);
-    s = s.replace(/\(\s*\)/g, '').replace(/\s{2,}/g, ' ');
+    return s.replace(/\(\s*\)/g, '').replace(/\s{2,}/g, ' ');
+  }
+
+  // Boil a spoken phrase down to the thing to do.
+  function condense(s) {
+    s = s.replace(FILLER, ' ').replace(/\s{2,}/g, ' ').trim();
+    // "go to the gym" → "gym", "go for a run" → "run"
+    s = s.replace(/^go\s+(?:to\s+|for\s+)?(?=\S)/i, '');
+    // Drop a weak verb when what follows is a piece of work: "do a quiz…" → "quiz…"
+    var noVerb = s.replace(WEAK_VERB, '');
+    if (noVerb !== s && new RegExp('^(?:(?:a|an|the|my|our|this|that|some)\\s+)?(?:[\\w\'-]+\\s+){0,2}' + TASK_NOUN + '\\b', 'i').test(noVerb)) s = noVerb;
+    s = s.replace(DETERMINERS, '').replace(/\s{2,}/g, ' ').trim();
+    // "quiz for business class" → "business class quiz"
+    var m = s.match(new RegExp('^((?:[\\w\'-]+\\s+){0,2}' + TASK_NOUN + ')\\s+(?:for|in|on|of|from|about)\\s+(.{2,40})$', 'i'));
+    if (m && m[2].split(/\s+/).length <= 4 && !/\b(?:and|with|to)\b/i.test(m[2])) s = m[2] + ' ' + m[1];
+    return s;
+  }
+
+  function cleanTitle(s) {
+    s = tidy(s.replace(/\s+/g, ' ').trim());
+    s = tidy(condense(s));
+    // Keep short all-caps words (AP, SAT) and capitalise the first letter.
     return capFirst(s);
   }
 
@@ -259,7 +285,10 @@
           b = b.trim();
           if (!b) return;
           // "buy eggs, milk, bread": a one-word fragment belongs to the previous task.
-          if (merged.length && wordCount(takeDuration(' ' + b + ' ').rest) <= 1) merged[merged.length - 1] += ', ' + b;
+          // "…, which takes 20 min" or "…, milk" belongs to the previous task.
+          var trailing = /^(?:which|that|it'?ll|it\s+will|it'?s|should|probably|maybe)\b/i.test(b);
+          var restWords = wordCount(takeDuration(' ' + b + ' ').rest);
+          if (merged.length && (trailing || restWords === 0 || (restWords === 1 && !hasDuration(b)))) merged[merged.length - 1] += ', ' + b;
           else merged.push(b);
         });
         merged.forEach(function (chunk) {
@@ -284,10 +313,10 @@
 
   // ---------- Auto-categorizer ----------
   var CAT_WORDS = {
-    School: 'study studying homework hw essay essays exam exams quiz quizzes test tests midterm midterms final finals class classes lecture lectures chapter chapters assignment assignments lab labs physics calc calculus math maths algebra geometry statistics stats chemistry chem biology bio history english spanish french latin literature ap sat act pset psets problem_set reading_assignment professor teacher syllabus flashcards revise revision thesis paper school course coursework textbook worksheet seminar tutor tutoring notes studyguide study_guide college university application applications scholarship',
+    School: 'study studying homework hw essay essays exam exams quiz quizzes test tests midterm midterms final finals class classes lecture lectures chapter chapters assignment assignments lab labs physics calc calculus math maths algebra geometry statistics stats chemistry chem biology bio history english spanish french latin literature ap sat act pset psets problem_set reading_assignment professor teacher syllabus flashcards revise revision thesis paper school course coursework textbook worksheet seminar tutor tutoring notes studyguide study_guide college university application applications scholarship psychology psych business marketing economics econ sociology philosophy government accounting anatomy physiology engineering cs programming art music discussion_post',
     Work: 'client clients meeting meetings email emails inbox report reports deck slides presentation pitch proposal invoice invoices deploy website websites site landing code coding bug bugs pr standup sprint ticket tickets launch portfolio boss manager coworker team project projects deadline spreadsheet figma design mockup mockups brief contract onboarding interview resume linkedin agency demo shift wireframe copy seo analytics pull_request code_review follow_up',
     Home: 'clean cleaning laundry dishes cook cooking dinner lunch breakfast vacuum tidy organize declutter repair trash garbage recycling garden plants bed room bedroom kitchen bathroom fridge closet mop dust iron ironing fold water_the_plants take_out meal_prep',
-    Errands: 'buy groceries grocery shop shopping pharmacy post package return store target costco walmart mall hardware haircut pick_up drop_off post_office dry_cleaning car_wash oil_change gas_station',
+    Errands: 'buy groceries grocery shop shopping pharmacy package return store target costco walmart mall hardware haircut pick_up drop_off post_office dry_cleaning car_wash oil_change gas_station',
     Health: 'gym workout run running jog jogging exercise doctor dentist therapy therapist meditate meditation yoga sleep walk stretch stretching physio checkup appointment meds medicine vitamins swim swimming bike lift lifting cardio steps work_out',
     Money: 'pay bill bills taxes tax budget budgeting insurance renew rent mortgage refund subscription subscriptions loan venmo transfer expenses receipts finances savings invest investing bank credit_card',
     Personal: 'mom dad parents grandma grandpa family friend friends birthday gift gifts party date read reading book journal guitar piano drums practice hobby text call podcast movie travel trip pack packing vacation girlfriend boyfriend wife husband sister brother wedding church volunteer'
@@ -475,23 +504,60 @@
     setText('#period-name', p.name);
   }
 
-  // The big countdown: budget minus everything already worked. Ticks while a timer runs.
+  // The dial: outer ring is the time left (drains as you work), inner ring is the work
+  // still planned. Whatever part of the plan doesn't fit in the time left shows in red.
+  var ticksFor = null;
+  function drawTicks(budgetMin) {
+    var g = $('#dial-ticks');
+    if (!g || ticksFor === budgetMin) return;
+    ticksFor = budgetMin;
+    var hours = budgetMin / 60;
+    var step = hours <= 30 ? 1 : hours <= 60 ? 2 : hours <= 150 ? 5 : 10;
+    var count = Math.floor(hours / step), html = '';
+    for (var i = 0; i < count; i++) {
+      var a = (i * step / hours) * 2 * Math.PI, major = (i * step) % (step * 5) === 0;
+      var r1 = major ? 93 : 95, r2 = 99;
+      html += '<line' + (major ? ' class="major"' : '') + ' x1="' + (100 + r1 * Math.sin(a)).toFixed(2) + '" y1="' + (100 - r1 * Math.cos(a)).toFixed(2) +
+        '" x2="' + (100 + r2 * Math.sin(a)).toFixed(2) + '" y2="' + (100 - r2 * Math.cos(a)).toFixed(2) + '"/>';
+    }
+    g.innerHTML = html;
+  }
+  function arc(el, start, len) {
+    if (!el) return;
+    len = Math.max(0, Math.min(len, 100));
+    el.style.strokeDasharray = len.toFixed(3) + ' 100';
+    el.style.strokeDashoffset = (-start).toFixed(3);
+  }
+
   function renderClock(p, m) {
-    var clock = $('#clock');
-    if (!clock) return;
+    var dial = $('#clock');
+    if (!dial) return;
     var leftMs = m.left * 60000, over = leftMs < 0;
     var running = state.running && taskById(state.running.taskId);
-    clock.classList.toggle('is-over', over);
-    clock.classList.toggle('is-running', !!(running && running.periodId === p.id));
+    dial.classList.toggle('is-over', over);
+    dial.classList.toggle('is-running', !!(running && running.periodId === p.id));
+    drawTicks(m.budget);
+
+    var secs = over ? Math.ceil(-leftMs / 1000) : Math.floor(leftMs / 1000);
     setText('#clock-label', over ? 'over budget' : 'left to work');
-    setText('#clock-time', (over ? '+' : '') + fmtClock(Math.abs(leftMs)));
+    setText('#clock-hm', (over ? '+' : '') + Math.floor(secs / 3600) + ':' + pad(Math.floor(secs / 60) % 60));
+    setText('#clock-sec', ':' + pad(secs % 60));
     setText('#clock-sub', 'of ' + fmt(m.budget) + ' · ' + fmt(m.used) + ' worked');
-    var ring = $('#clock-ring');
-    if (ring) {
-      var frac = m.budget > 0 ? Math.min(Math.max(m.left / m.budget, 0), 1) : 0;
-      ring.style.strokeDashoffset = (RING * (1 - frac)).toFixed(2);
-      ring.classList.toggle('is-over', over);
+
+    var b = m.budget > 0 ? m.budget : 1;
+    var leftPct = Math.max(m.left, 0) / b * 100;
+    arc($('#dial-left'), 0, leftPct);
+    var fits = Math.min(m.remaining, Math.max(m.left, 0));
+    arc($('#dial-work'), 0, fits / b * 100);
+    arc($('#dial-over'), leftPct, (m.remaining - fits) / b * 100);
+    var knob = $('#dial-knob');
+    if (knob) {
+      var a = Math.min(leftPct, 100) / 100 * 2 * Math.PI;
+      knob.setAttribute('cx', (100 + 84 * Math.sin(a)).toFixed(2));
+      knob.setAttribute('cy', (100 - 84 * Math.cos(a)).toFixed(2));
     }
+    setText('#lg-left', m.left >= 0 ? fmt(m.left) : '−' + fmt(-m.left));
+    setText('#lg-work', fmt(m.remaining));
   }
 
   function renderNow(p, m) {
@@ -523,26 +589,9 @@
     var pill = $('#sum-status');
     if (pill) {
       pill.className = 'status-pill is-' + m.status;
-      pill.textContent = { idle: 'No tasks yet', fits: 'Fits', tight: 'Tight fit', over: 'Over by ' + fmt(m.total - m.budget) }[m.status];
+      pill.textContent = { idle: 'No tasks yet', fits: 'Everything fits', tight: 'Tight fit', over: 'Plan is ' + fmt(m.total - m.budget) + ' over' }[m.status];
     }
-    setText('#fit-need', m.remaining > 0 ? 'Tasks need ' + fmt(m.remaining) + (m.status === 'fits' ? ' · ' + fmt(m.free) + ' spare' : '') : (m.tasks.length ? 'Nothing left to do' : ''));
-
     var realistic = acc.factor ? m.used + m.remaining * acc.factor : null;
-    var scale = Math.max(m.budget, m.total, realistic || 0, 1);
-    var usedW = Math.min(m.used, m.budget), remW = Math.max(Math.min(m.total, m.budget) - usedW, 0);
-    var pct = function (v) { return (v / scale * 100).toFixed(2) + '%'; };
-    var u = $('#meter-used'), r = $('#meter-rem'), o = $('#meter-over'), cap = $('#meter-cap'), real = $('#meter-real'), meter = $('#meter'), lg = $('#lg-real');
-    if (u) u.style.width = pct(usedW);
-    if (r) r.style.width = pct(remW);
-    if (o) o.style.width = pct(Math.max(m.total - m.budget, 0));
-    if (cap) { cap.style.left = pct(m.budget); cap.title = 'Budget: ' + fmt(m.budget); }
-    var showReal = realistic != null && m.remaining > 0 && Math.abs(realistic - m.total) >= 10;
-    if (real) {
-      real.hidden = !showReal;
-      if (showReal) { real.style.left = pct(realistic); real.title = 'Realistic total from how your past estimates turned out: ' + fmt(realistic); }
-    }
-    if (lg) lg.hidden = !showReal;
-    if (meter) meter.setAttribute('aria-label', fmt(m.used) + ' worked, ' + fmt(m.remaining) + ' still to do, against a ' + fmt(m.budget) + ' budget');
 
     var pace = $('#st-pace'), paceSub = '';
     if (pace) {

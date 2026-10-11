@@ -6,10 +6,12 @@ conventions.
 
 ## What it does
 
-- **Left panel ("clock"):** a countdown of the time left in the period's hour budget.
-  It's the budget minus time worked, and it ticks down live while any task timer runs.
-  Below it: the current or next task, a fit meter (worked / to do / over, plus a
-  "realistic" marker), pace, and estimate accuracy.
+- **Left panel (the dial):** a big countdown of the time left in the period's hour
+  budget (the budget minus time worked), ticking live while any task timer runs. The
+  thick outer ring is the time left and drains as you work, with a knob at its end.
+  The thin inner ring is the planned work still to do, drawn red past the point where
+  it no longer fits. There are hour ticks around the edge and the status badge sits on
+  the dial face. Below it: the current or next task, pace, and estimate accuracy.
 - **Right panel ("board"):** a plain-language brain-dump input with dictation, and
   the tasks grouped by **category**.
 - The cutoff is computed globally. Open tasks are ranked by priority, then `order`,
@@ -37,7 +39,7 @@ js/main.js     everything, as one IIFE
   previous task. `parseOne` pulls out the category (`#tag`, "for school"), duration
   (`takeDuration`: "2h", "45 min", "an hour and a half", "a couple hours"), priority
   ("urgent", "if I have time", `!high`) and due date ("by friday", "tomorrow",
-  `@10/17`), then `cleanTitle` strips lead-ins like "I need to". A line `School:` sets
+  `@10/17`), then `cleanTitle` strips lead-ins like "I need to" and `condense` boils the phrase down to the task. It drops filler, determiners and weak verbs (do/finish/take) before a `TASK_NOUN`, and reorders "quiz for my business class" into "Business class quiz". A line `School:` sets
   the category for the lines under it.
 - **Categorizer:** `classify(title)` scores against the `CAT_WORDS` keywords (phrases
   use `_`) plus `state.learn`. `learn(title, cat)` runs whenever the person forces or

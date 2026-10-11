@@ -74,41 +74,32 @@
           <button class="btn btn-ghost btn-sm" type="button" data-action="edit-period">Edit</button>
         </div>
 
-        <div class="clock" id="clock">
-          <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
-            <circle class="ring-bg" cx="60" cy="60" r="52"/>
-            <circle class="ring-fg" id="clock-ring" cx="60" cy="60" r="52"/>
+        <div class="dial" id="clock">
+          <svg class="dial-svg" viewBox="0 0 200 200" aria-hidden="true">
+            <g id="dial-ticks" class="dial-ticks"></g>
+            <g transform="rotate(-90 100 100)">
+              <circle class="dial-track" cx="100" cy="100" r="84" pathLength="100"/>
+              <circle class="dial-left" id="dial-left" cx="100" cy="100" r="84" pathLength="100"/>
+              <circle class="dial-work-track" cx="100" cy="100" r="71" pathLength="100"/>
+              <circle class="dial-work" id="dial-work" cx="100" cy="100" r="71" pathLength="100"/>
+              <circle class="dial-over" id="dial-over" cx="100" cy="100" r="71" pathLength="100"/>
+            </g>
+            <circle class="dial-knob" id="dial-knob" cx="100" cy="16" r="5.5"/>
           </svg>
-          <div class="ring-text">
+          <div class="dial-face">
             <span class="clock-label" id="clock-label">left to work</span>
-            <span class="clock-time" id="clock-time">0:00:00</span>
+            <span class="clock-time" role="timer" aria-live="off"><span id="clock-hm">0:00</span><span class="clock-sec" id="clock-sec">:00</span></span>
             <span class="clock-sub" id="clock-sub"></span>
+            <span class="status-pill" id="sum-status"></span>
           </div>
+        </div>
+
+        <div class="dial-legend">
+          <span><i class="sw sw-left"></i>Time left <b id="lg-left">–</b></span>
+          <span><i class="sw sw-work"></i>Work planned <b id="lg-work">–</b></span>
         </div>
 
         <div class="now" id="now"></div>
-
-        <div class="fit">
-          <div class="fit-row">
-            <span class="status-pill" id="sum-status"></span>
-            <span class="fit-need" id="fit-need"></span>
-          </div>
-          <div class="meter" id="meter" role="img" aria-label="">
-            <div class="meter-track">
-              <span class="meter-used" id="meter-used"></span>
-              <span class="meter-rem" id="meter-rem"></span>
-              <span class="meter-over" id="meter-over"></span>
-            </div>
-            <span class="meter-cap" id="meter-cap"></span>
-            <span class="meter-real" id="meter-real" hidden></span>
-          </div>
-          <div class="meter-legend">
-            <span><i class="sw sw-used"></i>Worked</span>
-            <span><i class="sw sw-rem"></i>To do</span>
-            <span><i class="sw sw-over"></i>Over</span>
-            <span class="lg-real" id="lg-real" hidden><i class="sw sw-real"></i>Realistic</span>
-          </div>
-        </div>
 
         <dl class="stats">
           <div><dt>Pace</dt><dd id="st-pace">–</dd><small id="st-pace-sub"></small></div>
