@@ -348,8 +348,9 @@
   // Built with the target document's own createElementNS so the pop-out window can reuse it.
   var SVGNS = 'http://www.w3.org/2000/svg';
   // Colours come from CSS tokens (--ch-*) so the watch has a light and a dark face.
-  var CH = { face: 'var(--ch-face)', bezel: 'var(--ch-bezel)', sub: 'var(--ch-sub)', subLine: 'var(--ch-subline)', ink: 'var(--ch-ink)', dim: 'var(--ch-dim)' };
+  var CH = { face: 'var(--ch-face)', bezel: 'var(--ch-bezel)', sub: 'var(--ch-sub)', subLine: 'var(--ch-subline)', ink: 'var(--ch-ink)', dim: 'var(--ch-dim)', accent: 'var(--ch-accent)' };
   var F_NUM = 'Barlow Condensed, Geist, sans-serif', F_MONO = 'Geist Mono, ui-monospace, monospace';
+  var F_UI = 'Geist, -apple-system, system-ui, sans-serif';
 
   function sv(parent, tag, attrs, text) {
     var n = (parent.ownerDocument || document).createElementNS(SVGNS, tag), style = '';
@@ -388,76 +389,99 @@
     };
   }
 
+  // Rounded-square watch face: ticks run out to the square's edges, four bold numerals at
+  // the quarters of your budget, thick black hour/minute hands and a thin orange second hand.
+  var SQ = { half: 104, radius: 46 };          // square from 6 to 214 in a 220 viewBox
+  // Where a ray from the centre at `turn` meets the rounded square's edge.
+  function edgePoint(cx, cy, turn) {
+    var a = turn * 2 * Math.PI, dx = Math.sin(a), dy = -Math.cos(a);
+    var H = SQ.half, R = SQ.radius, k = H - R;
+    var t = H / Math.max(Math.abs(dx), Math.abs(dy));
+    var px = dx * t, py = dy * t;
+    if (Math.abs(px) > k && Math.abs(py) > k) {
+      // Corner: intersect with the corner circle centred at (±k, ±k).
+      var ccx = px > 0 ? k : -k, ccy = py > 0 ? k : -k;
+      var b = -2 * (dx * ccx + dy * ccy), c = ccx * ccx + ccy * ccy - R * R;
+      t = (-b + Math.sqrt(Math.max(b * b - 4 * c, 0))) / 2;
+    }
+    return { x: cx + dx * t, y: cy + dy * t, dx: dx, dy: dy };
+  }
+  function edgeTick(g, cx, cy, turn, inset, len, w, color) {
+    var p = edgePoint(cx, cy, turn);
+    sv(g, 'line', { x1: (p.x - p.dx * (inset + len)).toFixed(2), y1: (p.y - p.dy * (inset + len)).toFixed(2),
+      x2: (p.x - p.dx * inset).toFixed(2), y2: (p.y - p.dy * inset).toFixed(2), stroke: color, 'stroke-width': w, 'stroke-linecap': 'butt' });
+  }
+
   function buildChrono(svg) {
     while (svg.firstChild) svg.removeChild(svg.firstChild);
-    var cx = 110, cy = 110, sx1 = cx - 42, sx2 = cx + 42;
-    sv(svg, 'circle', { cx: cx, cy: cy, r: 108, fill: CH.bezel });
-    sv(svg, 'circle', { cx: cx, cy: cy, r: 101, fill: CH.face });
-    var track = sv(svg, 'g', {});
-    for (var i = 0; i < 60; i++) svTick(track, cx, cy, i % 5 ? 94 : 89, 98, i / 60, i % 5 ? .6 : 1.8);
+    var cx = 110, cy = 110, sx1 = cx - 40, sx2 = cx + 40, sy = cy + 30;
+    sv(svg, 'rect', { x: 6, y: 6, width: 208, height: 208, rx: SQ.radius, fill: CH.face, stroke: CH.subLine, 'stroke-width': .6 });
+    var ticks = sv(svg, 'g', {});
     var numerals = sv(svg, 'g', {});
-    sv(svg, 'text', { x: cx, y: cy - 50, 'text-anchor': 'middle', 'font-family': 'Instrument Serif, Georgia, serif', 'font-style': 'italic', 'font-size': 14, fill: CH.ink }, 'Tempo');
-    var faceLabel = sv(svg, 'text', { x: cx, y: cy - 39, 'text-anchor': 'middle', 'font-family': F_MONO, 'font-size': 4.6, 'letter-spacing': 1.4, fill: CH.dim }, 'HOURS LEFT');
+    var readout = sv(svg, 'text', { x: cx, y: cy - 36, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-family': F_MONO, 'font-size': 7.6, fill: CH.dim }, '');
+    var faceLabel = sv(svg, 'text', { x: cx, y: cy - 27, 'text-anchor': 'middle', 'font-family': F_MONO, 'font-size': 4.2, 'letter-spacing': 1.2, fill: CH.dim }, 'HOURS LEFT');
 
+    // Small task dials in the lower half, kept quiet so the main face reads first.
     function subDial(sx, label) {
-      sv(svg, 'circle', { cx: sx, cy: cy, r: 23, fill: CH.sub, stroke: CH.subLine, 'stroke-width': .8 });
-      var arcEl = sv(svg, 'circle', { cx: sx, cy: cy, r: 19, fill: 'none', stroke: CH.ink, 'stroke-width': 2.2, 'stroke-opacity': .85,
-        pathLength: 100, 'stroke-dasharray': '0 100', transform: 'rotate(-90 ' + sx + ' ' + cy + ')' });
-      for (var j = 0; j < 12; j++) svTick(svg, sx, cy, j % 3 ? 20 : 17.5, 22.5, j / 12, j % 3 ? .5 : 1.2);
-      sv(svg, 'text', { x: sx, y: cy + 15.6, 'text-anchor': 'middle', 'font-family': F_MONO, 'font-size': 3.5, 'letter-spacing': .5, fill: CH.dim }, label);
-      var val = sv(svg, 'text', { x: sx, y: cy + 9, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-family': F_NUM, 'font-size': 7.5, 'font-weight': 600, fill: CH.ink }, '');
-      var setHand = svHand(svg, sx, cy, function (g) {
-        sv(g, 'line', { x1: sx, y1: cy + 4, x2: sx, y2: cy - 20, stroke: CH.ink, 'stroke-width': 1.3, 'stroke-linecap': 'round' });
-        sv(g, 'circle', { cx: sx, cy: cy, r: 2.3, fill: CH.ink });
+      sv(svg, 'circle', { cx: sx, cy: sy, r: 17, fill: CH.sub });
+      var arcEl = sv(svg, 'circle', { cx: sx, cy: sy, r: 14.5, fill: 'none', stroke: CH.accent, 'stroke-width': 1.8,
+        pathLength: 100, 'stroke-dasharray': '0 100', transform: 'rotate(-90 ' + sx + ' ' + sy + ')' });
+      for (var j = 0; j < 12; j++) svTick(svg, sx, sy, j % 3 ? 14.6 : 13, 16.2, j / 12, j % 3 ? .4 : .9);
+      sv(svg, 'text', { x: sx, y: sy + 11, 'text-anchor': 'middle', 'font-family': F_MONO, 'font-size': 3, 'letter-spacing': .4, fill: CH.dim }, label);
+      var val = sv(svg, 'text', { x: sx, y: sy + 6.2, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-family': F_UI, 'font-size': 5.6, 'font-weight': 700, fill: CH.ink }, '');
+      var setHand = svHand(svg, sx, sy, function (g) {
+        sv(g, 'line', { x1: sx, y1: sy + 2.5, x2: sx, y2: sy - 14, stroke: CH.ink, 'stroke-width': 1.3, 'stroke-linecap': 'round' });
+        sv(g, 'circle', { cx: sx, cy: sy, r: 1.8, fill: CH.ink });
       });
       return { hand: setHand, arc: arcEl, value: val };
     }
     var taskDial = subDial(sx1, 'TASK TIME');
     var doneDial = subDial(sx2, 'TASK DONE');
 
-    sv(svg, 'rect', { x: cx - 27, y: cy + 50, width: 54, height: 15, rx: 2.5, fill: CH.sub, stroke: CH.subLine, 'stroke-width': .8 });
-    var readout = sv(svg, 'text', { x: cx, y: cy + 57.8, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-family': F_MONO, 'font-size': 8.4, fill: CH.ink }, '');
-
     var hourHand = svHand(svg, cx, cy, function (g) {
-      sv(g, 'path', { d: 'M' + (cx - 4.2) + ' ' + (cy + 12) + ' L' + (cx - 3) + ' ' + (cy - 50) + ' L' + cx + ' ' + (cy - 57) + ' L' + (cx + 3) + ' ' + (cy - 50) + ' L' + (cx + 4.2) + ' ' + (cy + 12) + ' Z', fill: CH.ink });
-      sv(g, 'rect', { x: cx - 1, y: cy - 46, width: 2, height: 28, fill: CH.face });
+      sv(g, 'line', { x1: cx, y1: cy, x2: cx, y2: cy - 14, stroke: CH.ink, 'stroke-width': 2.4 });
+      sv(g, 'line', { x1: cx, y1: cy - 13, x2: cx, y2: cy - 54, stroke: CH.ink, 'stroke-width': 6.6, 'stroke-linecap': 'round' });
     });
     var minuteHand = svHand(svg, cx, cy, function (g) {
-      sv(g, 'path', { d: 'M' + (cx - 2.8) + ' ' + (cy + 14) + ' L' + (cx - 1.8) + ' ' + (cy - 82) + ' L' + cx + ' ' + (cy - 88) + ' L' + (cx + 1.8) + ' ' + (cy - 82) + ' L' + (cx + 2.8) + ' ' + (cy + 14) + ' Z', fill: CH.ink });
-      sv(g, 'rect', { x: cx - .8, y: cy - 78, width: 1.6, height: 50, fill: CH.face });
-    });
-    var secondHand = svHand(svg, cx, cy, function (g) {
-      sv(g, 'line', { x1: cx, y1: cy + 24, x2: cx, y2: cy - 96, stroke: CH.ink, 'stroke-width': .9 });
-      sv(g, 'rect', { x: cx - 2.2, y: cy + 13, width: 4.4, height: 11, rx: 1.2, fill: CH.ink });
+      sv(g, 'line', { x1: cx, y1: cy, x2: cx, y2: cy - 14, stroke: CH.ink, 'stroke-width': 2.4 });
+      sv(g, 'line', { x1: cx, y1: cy - 13, x2: cx, y2: cy - 86, stroke: CH.ink, 'stroke-width': 5.6, 'stroke-linecap': 'round' });
     });
     sv(svg, 'circle', { cx: cx, cy: cy, r: 4.2, fill: CH.ink });
-    sv(svg, 'circle', { cx: cx, cy: cy, r: 1.5, fill: CH.face });
+    var secondHand = svHand(svg, cx, cy, function (g) {
+      sv(g, 'line', { x1: cx, y1: cy + 18, x2: cx, y2: cy - 94, stroke: CH.accent, 'stroke-width': 1.3, 'stroke-linecap': 'round' });
+      sv(g, 'circle', { cx: cx, cy: cy, r: 3.2, fill: CH.face, stroke: CH.accent, 'stroke-width': 1.6 });
+    });
 
-    // Numerals: minutes for anything up to 6 hours, hours beyond. They sit on the real
-    // budget, so the hand and the scale always agree (a 4h30 session tops out at 270).
-    var numeralsFor = null;
-    function drawNumerals(budgetSec) {
+    // Ticks and numerals follow the budget: hours for weeks, minutes for anything up to 6h.
+    var scaleFor = null;
+    function drawScale(budgetSec) {
       var mins = Math.max(budgetSec / 60, 1), minuteMode = mins <= 360;
       var key = (minuteMode ? 'm' : 'h') + Math.round(mins / 5);
-      if (numeralsFor === key) return;
-      numeralsFor = key;
+      if (scaleFor === key) return;
+      scaleFor = key;
+      while (ticks.firstChild) ticks.removeChild(ticks.firstChild);
       while (numerals.firstChild) numerals.removeChild(numerals.firstChild);
-      if (minuteMode) {
-        var mstep = mins <= 60 ? 10 : mins <= 120 ? 15 : 30;
-        svNum(numerals, cx, cy, 78, 0, String(Math.round(mins / 5) * 5), 15);
-        for (var m = mstep; m < mins - mstep / 2; m += mstep) svNum(numerals, cx, cy, 78, m / mins, String(m), 12);
-        return;
+      var total = minuteMode ? mins : mins / 60;
+      var step = minuteMode ? (mins <= 60 ? 5 : mins <= 120 ? 10 : 15) : (total <= 24 ? 1 : total <= 60 ? 2 : 5);
+      var majors = Math.max(Math.round(total / step), 4);
+      var minorsPer = majors > 30 ? 1 : majors > 16 ? 2 : majors > 8 ? 3 : 4;
+      for (var i = 0; i < majors; i++) {
+        edgeTick(ticks, cx, cy, i / majors, 5, 11, 2.1, CH.ink);
+        for (var j = 1; j <= minorsPer; j++) edgeTick(ticks, cx, cy, (i + j / (minorsPer + 1)) / majors, 5, 8.5, 1.1, CH.dim);
       }
-      var hours = mins / 60;
-      var step = hours <= 12 ? 1 : hours <= 24 ? 2 : hours <= 48 ? 4 : hours <= 60 ? 5 : 10;
-      svNum(numerals, cx, cy, 78, 0, String(Math.round(hours)), 15);
-      for (var h = step; h < hours - step / 2; h += step) svNum(numerals, cx, cy, 78, h / hours, String(h), 12.5);
+      // Four bold numerals at the quarters, like 12/3/6/9.
+      var fmtQ = function (v) { return String(Math.round(v * 10) / 10).replace(/\.0$/, ''); };
+      [[0, total], [.25, total / 4], [.5, total / 2], [.75, total * 3 / 4]].forEach(function (q) {
+        var a = q[0] * 2 * Math.PI, r = q[0] % .5 ? 68 : 71;
+        sv(numerals, 'text', { x: (cx + r * Math.sin(a)).toFixed(2), y: (cy - r * Math.cos(a) + 1).toFixed(2), 'text-anchor': 'middle', 'dominant-baseline': 'central',
+          'font-family': F_UI, 'font-size': 22, 'font-weight': 700, fill: CH.ink }, fmtQ(q[1]));
+      });
     }
     function setArc(el, frac) { el.setAttribute('stroke-dasharray', (Math.max(0, Math.min(frac, 1)) * 100).toFixed(2) + ' 100'); }
 
     // s: { left (sec, may be negative), budget (sec), label, task: { spent, est } | null }
     return function update(s) {
-      drawNumerals(s.budget);
+      drawScale(s.budget);
       faceLabel.textContent = s.label || (s.budget / 60 <= 360 ? 'MINUTES LEFT' : 'HOURS LEFT');
       var L = Math.max(s.left, 0), whole = Math.floor(L);
       hourHand(Math.min(L / Math.max(s.budget, 1), 1));
@@ -1412,24 +1436,27 @@
   function drawMiniCanvas(cs, cur) {
     var c = mini.canvas, x = c.getContext('2d'), st = getComputedStyle(document.documentElement);
     var tok = function (n) { return st.getPropertyValue(n).trim(); };
-    var C = { face: tok('--ch-face'), bezel: tok('--ch-bezel'), ink: tok('--ch-ink'), dim: tok('--ch-dim') };
-    var W = c.width, H = c.height, cx = 150, cy = H / 2, R = 128;
-    var line = function (r1, r2, turn, w) {
+    var C = { face: tok('--ch-face'), ink: tok('--ch-ink'), dim: tok('--ch-dim'), accent: tok('--ch-accent'), bg: tok('--surface') };
+    var W = c.width, H = c.height, cx = 150, cy = H / 2, S = 136, k = S / 104;
+    x.fillStyle = C.bg; x.fillRect(0, 0, W, H);
+    x.beginPath(); x.roundRect(cx - S, cy - S, S * 2, S * 2, SQ.radius * k); x.fillStyle = C.face; x.fill();
+    var hand = function (turn, len, w, color, tail) {
       var a = turn * 2 * Math.PI;
-      x.beginPath(); x.lineWidth = w; x.strokeStyle = C.ink;
-      x.moveTo(cx + r1 * Math.sin(a), cy - r1 * Math.cos(a)); x.lineTo(cx + r2 * Math.sin(a), cy - r2 * Math.cos(a)); x.stroke();
+      x.beginPath(); x.lineWidth = w; x.lineCap = 'round'; x.strokeStyle = color;
+      x.moveTo(cx - (tail || 0) * Math.sin(a), cy + (tail || 0) * Math.cos(a)); x.lineTo(cx + len * Math.sin(a), cy - len * Math.cos(a)); x.stroke();
     };
-    x.fillStyle = C.face; x.fillRect(0, 0, W, H);
-    x.beginPath(); x.arc(cx, cy, R + 8, 0, 2 * Math.PI); x.fillStyle = C.bezel; x.fill();
-    x.beginPath(); x.arc(cx, cy, R, 0, 2 * Math.PI); x.fillStyle = C.face; x.fill();
-    for (var i = 0; i < 60; i++) line(i % 5 ? R - 7 : R - 14, R - 2, i / 60, i % 5 ? 1 : 3);
+    for (var i = 0; i < 60; i++) {
+      var p = edgePoint(0, 0, i / 60), major = i % 5 === 0, l = major ? 11 : 8.5;
+      x.beginPath(); x.lineWidth = major ? 2.6 : 1.2; x.strokeStyle = major ? C.ink : C.dim;
+      x.moveTo(cx + (p.x - p.dx * (5 + l)) * k, cy + (p.y - p.dy * (5 + l)) * k); x.lineTo(cx + (p.x - p.dx * 5) * k, cy + (p.y - p.dy * 5) * k); x.stroke();
+    }
     var L = Math.max(cs.left, 0), whole = Math.floor(L);
-    line(-14, R * .55, Math.min(L / Math.max(cs.budget, 1), 1), 9);
-    line(-16, R * .86, (L % 3600) / 3600, 5);
-    line(-26, R * .95, (whole % 60) / 60, 1.6);
-    x.beginPath(); x.arc(cx, cy, 6, 0, 2 * Math.PI); x.fillStyle = C.ink; x.fill();
+    hand(Math.min(L / Math.max(cs.budget, 1), 1), 54 * k, 8, C.ink);
+    hand((L % 3600) / 3600, 86 * k, 7, C.ink);
+    hand((whole % 60) / 60, 94 * k, 1.8, C.accent, 18 * k);
+    x.beginPath(); x.arc(cx, cy, 4, 0, 2 * Math.PI); x.fillStyle = C.accent; x.fill();
     x.fillStyle = C.ink; x.textAlign = 'left'; x.textBaseline = 'middle';
-    x.font = '400 46px "Geist Mono", monospace';
+    x.font = '500 44px "Geist Mono", monospace';
     var ov = Math.ceil(-cs.left);
     x.fillText(cs.left < 0 ? '+' + Math.floor(ov / 3600) + ':' + pad(Math.floor(ov / 60) % 60) : Math.floor(whole / 3600) + ':' + pad(Math.floor(whole / 60) % 60) + ':' + pad(whole % 60), 310, 78);
     x.fillStyle = C.dim; x.font = '500 15px "Geist Mono", monospace';

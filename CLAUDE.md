@@ -8,16 +8,19 @@ conventions.
 
 ## What it does
 
-- **Left panel (the chronograph):** an analog watch face built by `buildChrono(svg)`,
-  which returns an `update(state)` fed by `chronoState(m, cur)`.
-  - Big dial: the total time left in the period's hour budget. The hour hand is on a
-    0–budget scale (numerals drawn per budget), plus a minute hand, a once-a-second
-    second hand, and an `h:mm:ss` readout window ("+h:mm OVER" past the budget).
-  - Left sub-dial: a stopwatch for the current task (running, or else up next).
-  - Right sub-dial: that task's % complete against its estimate, with a filling arc.
-  - Colours come from the `--ch-*` tokens: a white face in light mode and a black face
-    in dark mode. `sv()` routes `var()` colours through `style`, because SVG
-    attributes can't take `var()`.
+- **Left panel (the clock):** a rounded-square analog face built by `buildChrono(svg)`,
+  styled after the macOS clock widget. It returns an `update(state)` fed by
+  `chronoState(m, cur)`.
+  - Ticks run out to the square's edges (`edgePoint`/`edgeTick`). Major ticks mark budget
+    units: hours, or minutes for anything up to 6h.
+  - Four bold numerals sit at the quarters of the budget (20 / 5 / 10 / 15 for a 20h week).
+  - Thick black hour and minute hands, and an orange (`--ch-accent`) second hand that ticks
+    once a second.
+  - Small `h:mm:ss` readout under the top numeral ("+h:mm OVER" past the budget).
+  - Two small task dials: a stopwatch for the current task, and % done against its estimate
+    (orange arc).
+  - Colours come from the `--ch-*` tokens (white face in light mode, graphite in dark).
+    `sv()` routes `var()` colours through `style`.
   - Below it: the status badge, time left vs. work planned, the current task, pace,
     and estimate accuracy.
 - **Pop-out mini timer** (the button next to Edit, or `p`): in Chrome and Edge,

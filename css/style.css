@@ -20,7 +20,7 @@
   --shadow: 0 1px 2px rgb(40 30 10 / .06), 0 8px 24px rgb(40 30 10 / .06);
   --c-school: #3f5f9e; --c-work: #b5532c; --c-home: #5b7a3a; --c-errands: #9a6a12;
   --c-health: #2f7d6e; --c-money: #6b4f9e; --c-personal: #a8436b; --c-other: #77736a;
-  --ch-face: #ffffff; --ch-bezel: #141414; --ch-sub: #f2f2ef; --ch-subline: #d4d4ce; --ch-ink: #111111; --ch-dim: #75736c;
+  --ch-face: #ffffff; --ch-bezel: #141414; --ch-sub: #f3f3f1; --ch-subline: #e3e3de; --ch-ink: #111111; --ch-dim: #a3a39c; --ch-accent: #f0952d;
 
   --f-display: "Instrument Serif", Georgia, serif;
   --f-ui: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -44,7 +44,7 @@
     --bad: #ec7466; --bad-soft: #3a1c18;
     --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 10px 30px rgb(0 0 0 / .35);
     --c-school: #8fa8e0; --c-work: #e27c50; --c-home: #9fbf78; --c-errands: #ddb050; --c-health: #6cc2b0; --c-money: #b29ae0; --c-personal: #e386ab; --c-other: #a39e93;
-   --ch-face: #0c0c0c; --ch-bezel: #2c2c2a; --ch-sub: #171717; --ch-subline: #3a3a38; --ch-ink: #f4f4f0; --ch-dim: #9a9a94;
+   --ch-face: #1c1c1e; --ch-bezel: #2c2c2a; --ch-sub: #2a2a2c; --ch-subline: #333336; --ch-ink: #f5f5f7; --ch-dim: #6c6c70; --ch-accent: #f5a23c;
     color-scheme: dark;
   }
 }
@@ -58,7 +58,7 @@
   --bad: #ec7466; --bad-soft: #3a1c18;
   --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 10px 30px rgb(0 0 0 / .35);
   --c-school: #8fa8e0; --c-work: #e27c50; --c-home: #9fbf78; --c-errands: #ddb050; --c-health: #6cc2b0; --c-money: #b29ae0; --c-personal: #e386ab; --c-other: #a39e93;
-   --ch-face: #0c0c0c; --ch-bezel: #2c2c2a; --ch-sub: #171717; --ch-subline: #3a3a38; --ch-ink: #f4f4f0; --ch-dim: #9a9a94;
+   --ch-face: #1c1c1e; --ch-bezel: #2c2c2a; --ch-sub: #2a2a2c; --ch-subline: #333336; --ch-ink: #f5f5f7; --ch-dim: #6c6c70; --ch-accent: #f5a23c;
   color-scheme: dark;
 }
 
@@ -201,7 +201,7 @@ kbd, code {
 
 /* The chronograph: white face in light mode, black face in dark mode (--ch-* tokens). */
 .chrono { position: relative; width: min(100%, 370px); aspect-ratio: 1; margin: 10px auto 4px; }
-.chrono svg { width: 100%; height: 100%; display: block; overflow: visible; filter: drop-shadow(0 10px 24px rgb(0 0 0 / .18)); }
+.chrono svg { width: 100%; height: 100%; display: block; overflow: visible; filter: drop-shadow(0 12px 26px rgb(0 0 0 / .16)); }
 .chrono svg *, .mini-chrono * { transition: fill .3s, stroke .3s; }
 .chrono .ch-hand, .mini-chrono .ch-hand { transition: none; }
 .theme-btn svg { width: 19px; height: 19px; }
