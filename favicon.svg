@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    .ink { fill: #111; } .line { stroke: #111; } .face { fill: #fff; }
+    @media (prefers-color-scheme: dark) { .ink { fill: #f4f4f0; } .line { stroke: #f4f4f0; } .face { fill: #111; } }
+  </style>
+  <rect class="ink" x="12.6" y="1.4" width="6.8" height="2.9" rx="1.2"/>
+  <rect class="ink" x="14.9" y="3.8" width="2.2" height="3.4"/>
+  <rect class="ink" x="24.1" y="6.6" width="3.4" height="2.6" rx=".8" transform="rotate(45 25.8 7.9)"/>
+  <circle class="face line" cx="16" cy="18.4" r="11.2" stroke-width="2.8"/>
+  <path class="line" d="M16 18.4 21.6 12.8" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+  <circle class="ink" cx="16" cy="18.4" r="2.1"/>
+  <circle class="ink" cx="16" cy="24.4" r="1.3"/>
+</svg>

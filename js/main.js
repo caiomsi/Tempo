@@ -1,45 +1,69 @@
 /* Tempo: say what you need to do, see if it fits the time you have.
-   Plain DOM, data lives in localStorage. */
+   Plain DOM. Parsing lives in js/parse.js (TempoParse), accounts + sync in js/sync.js (TempoSync).
+   Data is kept in localStorage and, when signed in, synced to the account. */
 (function () {
   'use strict';
 
+  var TP = window.TempoParse;
   var KEY = 'tempo:v1';
   var DAY = 86400000;
-  var DEFAULT_EST = 30;
   var PRI_RANK = { high: 0, med: 1, low: 2 };
   var PRI_LABEL = { high: 'High', med: 'Med', low: 'Low' };
-  var WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-  var CATS = ['School', 'Work', 'Home', 'Errands', 'Health', 'Money', 'Personal', 'Other'];
+  var CATS = TP.CATS;
   var RING = 2 * Math.PI * 52;
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
 
+  var pad = TP.pad, iso = TP.iso, parseISO = TP.parseISO, today = TP.today, addDays = TP.addDays;
+  var capFirst = TP.capFirst, catName = TP.catName, fmt = TP.fmt, parseDuration = TP.parseDuration;
+
   // ---------- State ----------
   function blank() {
-    return { periods: [], activePeriodId: null, tasks: [], running: null, learn: {}, settings: { theme: 'system', pomodoro: false } };
+    return { periods: [], activePeriodId: null, tasks: [], running: null, runningAt: 0, learn: {}, deleted: {}, settings: { theme: 'system', pomodoro: false } };
   }
 
+  function normalizePeriod(p) {
+    var session = p.kind === 'session';
+    return {
+      id: String(p.id), kind: session ? 'session' : 'week', name: String(p.name || (session ? 'Study session' : 'Untitled period')),
+      start: p.start, end: p.end,
+      budgetMin: session && (p.budgetMin == null || p.budgetMin === '') ? null : Math.max(0, Number(p.budgetMin) || 0),
+      closed: !!p.closed, startedAt: p.startedAt || null, endedAt: p.endedAt || null, breaks: p.breaks !== false,
+      parentId: p.parentId || null, linkIds: Array.isArray(p.linkIds) ? p.linkIds.map(String) : [],
+      updatedAt: p.updatedAt || 0
+    };
+  }
+  function normalizeTask(t) {
+    var out = {
+      id: String(t.id), periodId: String(t.periodId), title: String(t.title || 'Untitled'),
+      estMin: Math.max(0, Number(t.estMin) || 0), estGuess: !!t.estGuess, priority: PRI_RANK[t.priority] != null ? t.priority : 'med',
+      due: t.due || '', category: catName(t.category || t.tag || '') || 'Other', notes: t.notes || '',
+      done: !!t.done, carried: !!t.carried, doneAt: t.doneAt || null, order: Number(t.order) || 0,
+      logs: Array.isArray(t.logs) ? t.logs.filter(function (l) { return l && l.end > l.start; }) : [],
+      updatedAt: t.updatedAt || 0
+    };
+    if (t.logsResetAt) out.logsResetAt = t.logsResetAt;
+    return out;
+  }
   function normalize(s) {
     var b = blank();
     if (!s || typeof s !== 'object') return b;
-    var periods = Array.isArray(s.periods) ? s.periods.filter(function (p) { return p && p.id && p.start && p.end; }) : [];
-    var tasks = Array.isArray(s.tasks) ? s.tasks.filter(function (t) { return t && t.id && t.periodId; }).map(function (t) {
-      return {
-        id: String(t.id), periodId: String(t.periodId), title: String(t.title || 'Untitled'),
-        estMin: Math.max(0, Number(t.estMin) || 0), priority: PRI_RANK[t.priority] != null ? t.priority : 'med',
-        due: t.due || '', category: catName(t.category || t.tag || '') || 'Other', notes: t.notes || '',
-        done: !!t.done, carried: !!t.carried, doneAt: t.doneAt || null, order: Number(t.order) || 0,
-        logs: Array.isArray(t.logs) ? t.logs.filter(function (l) { return l && l.end > l.start; }) : []
-      };
-    }) : [];
-    var active = periods.some(function (p) { return p.id === s.activePeriodId; }) ? s.activePeriodId : (periods.length ? periods[periods.length - 1].id : null);
+    var periods = Array.isArray(s.periods) ? s.periods.filter(function (p) { return p && p.id && p.start && p.end; }).map(normalizePeriod) : [];
+    var tasks = Array.isArray(s.tasks) ? s.tasks.filter(function (t) { return t && t.id && t.periodId; }).map(normalizeTask) : [];
+    var active = periods.some(function (p) { return p.id === s.activePeriodId; }) ? s.activePeriodId : null;
+    if (!active && periods.length) active = (latestOpen(periods) || periods[periods.length - 1]).id;
     var running = s.running && tasks.some(function (t) { return t.id === s.running.taskId; }) ? s.running : null;
     return {
-      periods: periods, activePeriodId: active, tasks: tasks, running: running,
+      periods: periods, activePeriodId: active, tasks: tasks, running: running, runningAt: s.runningAt || 0,
       learn: s.learn && typeof s.learn === 'object' ? s.learn : {},
+      deleted: s.deleted && typeof s.deleted === 'object' ? s.deleted : {},
       settings: Object.assign(b.settings, s.settings || {})
     };
+  }
+  function latestOpen(periods) {
+    var open = periods.filter(function (p) { return !p.closed; });
+    return open.length ? open[open.length - 1] : null;
   }
 
   function load() {
@@ -49,323 +73,63 @@
     } catch (e) { return blank(); }
   }
 
+  // Every change stamps the items it touched (updatedAt) and records deletions, so the
+  // account copy can merge edits made on different devices item by item.
+  var snap = {}, snapRunning = 'null';
+  function itemJSON(o) { return JSON.stringify(o, function (k, v) { return k === 'updatedAt' ? undefined : v; }); }
+  function resetSnap() {
+    snap = {};
+    state.tasks.concat(state.periods).forEach(function (o) { snap[o.id] = itemJSON(o); });
+    snapRunning = JSON.stringify(state.running);
+  }
+  function stampChanges() {
+    var now = Date.now(), seen = {};
+    state.tasks.concat(state.periods).forEach(function (o) {
+      var j = itemJSON(o);
+      seen[o.id] = true;
+      if (snap[o.id] !== j) { o.updatedAt = now; snap[o.id] = j; }
+    });
+    Object.keys(snap).forEach(function (id) { if (!seen[id]) { state.deleted[id] = now; delete snap[id]; } });
+    var rj = JSON.stringify(state.running);
+    if (rj !== snapRunning) { state.runningAt = now; snapRunning = rj; }
+    // Forget deletion markers after 60 days.
+    Object.keys(state.deleted).forEach(function (id) { if (now - state.deleted[id] > 60 * DAY) delete state.deleted[id]; });
+  }
+
   var storageWarned = false;
-  function save() {
+  function save(opts) {
+    if (!(opts && opts.quiet)) stampChanges();
     try { localStorage.setItem(KEY, JSON.stringify(state)); }
     catch (e) {
-      if (!storageWarned) { toast('Can’t save in this browser. Export a backup so you don’t lose your work.'); storageWarned = true; }
+      if (!storageWarned) { toast('Can’t save in this browser. Sign in or export a backup so you don’t lose your work.'); storageWarned = true; }
     }
+    if (!(opts && opts.quiet) && window.TempoSync && TempoSync.user) TempoSync.schedule();
   }
 
   var state = load();
-  var ui = { filter: 'open', search: '', editingTaskId: null, editingPeriodId: null, focusId: null, pomo: null };
+  resetSnap();
+  var ui = {
+    filter: 'open', search: '', editingTaskId: null, editingPeriodId: null, focusId: null, pomo: null,
+    preview: [], edits: {}, warned: {}, flash: {}, estEditing: null
+  };
 
   // ---------- Utils ----------
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
   function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
-  function pad(n) { return n < 10 ? '0' + n : '' + n; }
-  function iso(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
-  function parseISO(s) { var p = String(s).split('-'); return new Date(+p[0], +p[1] - 1, +p[2]); }
-  function today() { var d = new Date(); return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
-  function addDays(d, n) { var x = new Date(d); x.setDate(x.getDate() + n); return x; }
   function daysBetween(a, b) { return Math.round((b - a) / DAY); }
-  function capFirst(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
-  function catName(s) {
-    s = String(s || '').trim().replace(/^#/, '');
-    if (!s) return '';
-    for (var i = 0; i < CATS.length; i++) if (CATS[i].toLowerCase() === s.toLowerCase()) return CATS[i];
-    return capFirst(s);
-  }
-
-  function fmt(min) {
-    min = Math.max(0, Math.round(min));
-    var h = Math.floor(min / 60), m = min % 60;
-    if (!h) return m + 'm';
-    return m ? h + 'h ' + m + 'm' : h + 'h';
-  }
   function fmtClock(ms) {
     var s = Math.max(0, Math.floor(ms / 1000));
     return Math.floor(s / 3600) + ':' + pad(Math.floor(s / 60) % 60) + ':' + pad(s % 60);
   }
-  function fmtShortDate(s) {
-    return parseISO(s).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-  }
+  function fmtShortDate(s) { return parseISO(s).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }); }
   function fmtRange(p) {
     var o = { month: 'short', day: 'numeric' };
     return parseISO(p.start).toLocaleDateString(undefined, o) + ' – ' + parseISO(p.end).toLocaleDateString(undefined, o);
   }
+  function fmtTime(ms) { return new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }); }
+  function fmtEst(t) { return (t.estGuess ? '~' : '') + fmt(t.estMin); }
 
-  // Form fields: "2h", "1h30m", "90m", "1.5", "1:30" → minutes. Bare numbers are hours.
-  function parseDuration(str) {
-    if (str == null) return null;
-    var s = String(str).trim().toLowerCase().replace(/\s+/g, '');
-    if (!s) return null;
-    var m;
-    if ((m = s.match(/^(\d+):(\d{1,2})$/))) return +m[1] * 60 + +m[2];
-    if ((m = s.match(/^(\d+(?:[.,]\d+)?)$/))) return Math.round(parseFloat(m[1].replace(',', '.')) * 60);
-    if ((m = s.match(/^(?:(\d+(?:[.,]\d+)?)h(?:rs?|ours?)?)?(?:(\d+)m(?:in(?:s|utes?)?)?)?$/)) && (m[1] || m[2])) {
-      return Math.round((m[1] ? parseFloat(m[1].replace(',', '.')) * 60 : 0) + (m[2] ? +m[2] : 0));
-    }
-    return null;
-  }
-
-  // ---------- Natural-language parsing ----------
-  var NUM = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
-    fifteen: 15, twenty: 20, thirty: 30, forty: 40, 'forty-five': 45, 'forty five': 45, fifty: 50, sixty: 60, ninety: 90,
-    couple: 2, 'a couple': 2, 'a couple of': 2, 'couple of': 2, few: 3, 'a few': 3 };
-  function num(w) {
-    w = String(w).toLowerCase().replace(/\s+/g, ' ').trim();
-    if (/^\d+([.,]\d+)?$/.test(w)) return parseFloat(w.replace(',', '.'));
-    return NUM[w] != null ? NUM[w] : null;
-  }
-  var NUMW = '(\\d+(?:[.,]\\d+)?|an?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty(?:[- ]five)?|fifty|sixty|ninety|(?:a\\s+)?couple(?:\\s+of)?|(?:a\\s+)?few)';
-  var LEAD = '(?:\\b(?:which|that|it|this)\\s+)?(?:(?:for|takes?|taking|(?:(?:would|will|should|might|could|may|it\'?ll)\\s+|(?:is|are|it\'?s)\\s+(?:gonna|going\\s+to)\\s+|gonna\\s+)(?:probably\\s+|likely\\s+|only\\s+)?take|about|around|roughly|approx(?:imately)?|like|~|maybe|probably|only|just)\\s*)*';
-  var HRS = '(?:h|hrs?|hours?)';
-  var MINS = '(?:m|mins?|minutes?)';
-  var DURATIONS = [
-    [new RegExp(LEAD + '\\b(?:half\\s+an?\\s+hour|half\\s+hour|half-hour)\\b', 'i'), function () { return 30; }],
-    [new RegExp(LEAD + '\\b' + NUMW + '\\s+' + HRS + '\\s+and\\s+a\\s+half\\b', 'i'), function (m) { return num(m[1]) * 60 + 30; }],
-    [new RegExp(LEAD + '\\b' + NUMW + '\\s+and\\s+a\\s+half\\s+' + HRS + '\\b', 'i'), function (m) { return num(m[1]) * 60 + 30; }],
-    [new RegExp(LEAD + '\\b(\\d+)h(\\d{1,2})\\b', 'i'), function (m) { return +m[1] * 60 + +m[2]; }],
-    [new RegExp(LEAD + '(?:\\b|~)' + NUMW + '\\s*' + HRS + '\\b(?:\\s*(?:and\\s*)?(\\d+)\\s*' + MINS + '\\b)?', 'i'), function (m) { return num(m[1]) * 60 + (m[2] ? +m[2] : 0); }],
-    [new RegExp(LEAD + '(?:\\b|~)' + NUMW + '\\s*' + MINS + '\\b', 'i'), function (m) { var n = num(m[1]); return /few/i.test(m[1]) ? 10 : n; }]
-  ];
-  function takeDuration(s) {
-    for (var i = 0; i < DURATIONS.length; i++) {
-      var m = s.match(DURATIONS[i][0]);
-      if (m) {
-        var v = DURATIONS[i][1](m);
-        if (v != null && !isNaN(v) && v > 0) return { min: Math.round(v), rest: s.replace(m[0], ' ') };
-      }
-    }
-    return { min: null, rest: s };
-  }
-
-  var PRI_LOW = /\b(?:low\s+priority|low\s+prio|if\s+i\s+(?:have|get)\s+(?:the\s+)?time|whenever|someday|no\s+rush|not\s+urgent|not\s+important|optional|eventually)\b|!(?:low|lo|l|3)\b/i;
-  var PRI_HIGH = /\b(?:urgent(?:ly)?|asap|important|high\s+priority|top\s+priority|critical|must\s+do)\b|!(?:high|hi|h|1)\b|!!/i;
-  var PRI_MED = /!(?:med|medium|m|2)\b/i;
-  function takePriority(s) {
-    var m;
-    if ((m = s.match(PRI_LOW))) return { pri: 'low', rest: s.replace(m[0], ' ') };
-    if ((m = s.match(PRI_HIGH))) return { pri: 'high', rest: s.replace(m[0], ' ') };
-    if ((m = s.match(PRI_MED))) return { pri: 'med', rest: s.replace(m[0], ' ') };
-    return { pri: null, rest: s };
-  }
-
-  function nextWeekday(idx, allowToday) {
-    var t = today(), diff = (idx - t.getDay() + 7) % 7;
-    if (diff === 0 && !allowToday) diff = 7;
-    return iso(addDays(t, diff));
-  }
-  function dueFromWord(w) {
-    w = w.toLowerCase().replace(/\s+/g, ' ');
-    var t = today(), m;
-    if (w === 'today' || w === 'tonight' || w === 'tod') return iso(t);
-    if (w === 'tomorrow' || w === 'tmr' || w === 'tom') return iso(addDays(t, 1));
-    if (/^(this )?weekend$/.test(w)) return nextWeekday(6, true);
-    if (/^end of (the )?week$/.test(w)) return nextWeekday(5, true);
-    if (w === 'next week') return nextWeekday(1, false);
-    for (var i = 0; i < 7; i++) {
-      var full = WEEKDAYS[i];
-      if (w === full || (w.length >= 3 && full.indexOf(w) === 0)) return nextWeekday(i, true);
-    }
-    if ((m = w.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/))) return iso(new Date(+m[1], +m[2] - 1, +m[3]));
-    if ((m = w.match(/^(\d{1,2})\/(\d{1,2})$/))) {
-      var d = new Date(t.getFullYear(), +m[1] - 1, +m[2]);
-      if (d < addDays(t, -60)) d.setFullYear(d.getFullYear() + 1);
-      return iso(d);
-    }
-    return null;
-  }
-  var DAYWORD = '(today|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|(?:this\\s+)?weekend|end\\s+of\\s+(?:the\\s+)?week|next\\s+week)';
-  var DUE_RES = [
-    new RegExp('@(\\S+)', 'i'),
-    new RegExp('\\b(?:due|by|on|before|until|for)\\s+(mon|tues?|wed|thu(?:rs?)?|fri|sat|sun|\\d{1,2}\\/\\d{1,2}|\\d{4}-\\d{1,2}-\\d{1,2})\\b', 'i'),
-    new RegExp('\\b(?:(?:due|by|on|before|until|for)\\s+)?(?:(?:this|next)\\s+(?=monday|tuesday|wednesday|thursday|friday|saturday|sunday))?' + DAYWORD + '\\b', 'i')
-  ];
-  function takeDue(s) {
-    for (var i = 0; i < DUE_RES.length; i++) {
-      var m = s.match(DUE_RES[i]);
-      if (m) {
-        var d = dueFromWord(m[1]);
-        if (d) return { due: d, rest: s.replace(m[0], ' ') };
-      }
-    }
-    return { due: '', rest: s };
-  }
-
-  var CAT_ALIAS = { school: 'School', class: 'School', uni: 'School', college: 'School', university: 'School',
-    work: 'Work', job: 'Work', 'the office': 'Work', 'my job': 'Work', home: 'Home', 'the house': 'Home', house: 'Home' };
-  function takeCategory(s) {
-    var m = s.match(/#([\w\-À-ž]+)/);
-    if (m) return { cat: catName(m[1]), rest: s.replace(m[0], ' ') };
-    m = s.match(/\bfor\s+(school|class|uni|college|university|work|my\s+job|the\s+office|the\s+house)\b/i);
-    if (m) return { cat: CAT_ALIAS[m[1].toLowerCase().replace(/\s+/g, ' ')], rest: s.replace(m[0], ' ') };
-    return { cat: '', rest: s };
-  }
-
-  var LEAD_IN = /^(?:(?:and|also|then|plus|oh|so|ok|okay|um|uh|first|next|lastly|finally)[,:]?\s+)*(?:i\s+|we\s+)?(?:also\s+|really\s+|still\s+|definitely\s+)?(?:(?:need|needs|have|has|got|want|going)\s+to\s+|gotta\s+|gonna\s+|must\s+|should\s+|wanna\s+|'ll\s+|will\s+|remember\s+to\s+|don'?t\s+forget\s+to\s+|i'?ve\s+got\s+to\s+|i'?ll\s+)+/i;
-  var TRAIL = /\s+(?:and|which|that|it|is|are|will|would|should|takes?|for|about|around|by|on|due|to|the|also|then|plus|maybe|like|with|probably)$/i;
-  // Words that name a piece of work. "a quiz for my business class" → "Business class quiz".
-  var TASK_NOUN = '(?:quiz(?:zes)?|tests?|exams?|midterms?|finals?|essays?|papers?|homework|hw|assignments?|projects?|reports?|presentations?|labs?|worksheets?|readings?|problem\\s+sets?|psets?|discussion\\s+posts?|posts?|reflections?|study\\s+guides?|notes|slides|decks?|proposals?|applications?|reviews?|summar(?:y|ies)|outlines?|drafts?|lectures?|chapters?|questions|exercises?|modules?|case\\s+stud(?:y|ies)|research|flashcards|portfolio|resume|cover\\s+letter|forms?|invoices?)';
-  var WEAK_VERB = /^(?:do(?:ing)?|finish(?:ing)?|complete|completing|work(?:ing)?\s+on|get\s+done|take|taking|start(?:\s+on)?|knock\s+out|get\s+started\s+on|deal\s+with)\s+/i;
-  var DETERMINERS = /\b(?:a|an|the|my|our|his|her|their|some|this|these|those)\s+(?=\S)/gi;
-  var FILLER = /\b(?:real\s+quick|quickly|or\s+so|i\s+think|probably|basically|actually|just|kind\s+of|sort\s+of|at\s+some\s+point|as\s+well|too)\b/gi;
-
-  function tidy(s) {
-    var prev;
-    do {
-      prev = s;
-      s = s.replace(LEAD_IN, '').replace(/^to\s+/i, '').replace(/^[\s,.;:!?\-–—]+|[\s,.;:!?\-–—(]+$/g, '').replace(TRAIL, '').trim();
-    } while (s !== prev);
-    return s.replace(/\(\s*\)/g, '').replace(/\s{2,}/g, ' ');
-  }
-
-  // Boil a spoken phrase down to the thing to do.
-  function condense(s) {
-    s = s.replace(FILLER, ' ').replace(/\s{2,}/g, ' ').trim();
-    // "go to the gym" → "gym", "go for a run" → "run"
-    s = s.replace(/^go\s+(?:to\s+|for\s+)?(?=\S)/i, '');
-    // Drop a weak verb when what follows is a piece of work: "do a quiz…" → "quiz…"
-    var noVerb = s.replace(WEAK_VERB, '');
-    if (noVerb !== s && new RegExp('^(?:(?:a|an|the|my|our|this|that|some)\\s+)?(?:[\\w\'-]+\\s+){0,2}' + TASK_NOUN + '\\b', 'i').test(noVerb)) s = noVerb;
-    s = s.replace(DETERMINERS, '').replace(/\s{2,}/g, ' ').trim();
-    // "quiz for business class" → "business class quiz"
-    var m = s.match(new RegExp('^((?:[\\w\'-]+\\s+){0,2}' + TASK_NOUN + ')\\s+(?:for|in|on|of|from|about)\\s+(.{2,40})$', 'i'));
-    if (m && m[2].split(/\s+/).length <= 4 && !/\b(?:and|with|to)\b/i.test(m[2])) s = m[2] + ' ' + m[1];
-    return s;
-  }
-
-  function cleanTitle(s) {
-    s = tidy(s.replace(/\s+/g, ' ').trim());
-    s = tidy(condense(s));
-    // Keep short all-caps words (AP, SAT) and capitalise the first letter.
-    return capFirst(s);
-  }
-
-  // One task out of one phrase.
-  function parseOne(text, forcedCat) {
-    var s = ' ' + text + ' ';
-    var c = takeCategory(s); s = c.rest;
-    var d = takeDuration(s); s = d.rest;
-    var p = takePriority(s); s = p.rest;
-    var u = takeDue(s); s = u.rest;
-    var title = cleanTitle(s);
-    var cat = c.cat || forcedCat || '';
-    return {
-      title: title, estMin: d.min, priority: p.pri || 'med', due: u.due,
-      category: cat || classify(title), catAuto: !cat
-    };
-  }
-
-  function hasDuration(s) { return takeDuration(' ' + s + ' ').min != null; }
-  function wordCount(s) { return s.trim().split(/\s+/).filter(Boolean).length; }
-
-  // A whole brain dump → list of tasks.
-  function parseDump(text) {
-    var out = [], header = '';
-    String(text).split(/\n+/).forEach(function (rawLine) {
-      var line = rawLine.replace(/^\s*(?:[-*•·]|\d+[.)]|\[\s?\])\s+/, '').trim();
-      if (!line) { header = ''; return; }
-      var hm = line.match(/^([A-Za-zÀ-ž][\wÀ-ž &\-]{0,24}):\s*(.*)$/);
-      var lineCat = header;
-      if (hm && !/^\d/.test(hm[2])) {
-        if (!hm[2]) { header = catName(CAT_ALIAS[hm[1].toLowerCase()] || hm[1]); return; }
-        lineCat = catName(CAT_ALIAS[hm[1].toLowerCase()] || hm[1]);
-        line = hm[2];
-      }
-      // Split on ; and sentence ends, then commas, then "and"/"then" between two real tasks.
-      var parts = [];
-      line.split(/;|\.\s+(?=[A-Za-z])|\.$/).forEach(function (sentence) {
-        // Protect "an hour and a half" so the "and" splitter doesn't cut it.
-        sentence = sentence.replace(/\band\s+a\s+half\b/gi, 'and_a_half');
-        var bits = sentence.split(/,\s*(?:(?:and|then|also|plus)\s+)?|\s+(?:and\s+then|then\s+also|and\s+(?:i\s+)?also|(?:i\s+)?also|plus)\s+/i);
-        var merged = [];
-        bits.forEach(function (b) {
-          b = b.trim();
-          if (!b) return;
-          // "buy eggs, milk, bread": a one-word fragment belongs to the previous task.
-          // "…, which takes 20 min" or "…, milk" belongs to the previous task.
-          var trailing = /^(?:which|that|it'?ll|it\s+will|it'?s|should|probably|maybe)\b/i.test(b);
-          var restWords = wordCount(takeDuration(' ' + b + ' ').rest);
-          if (merged.length && (trailing || restWords === 0 || (restWords === 1 && !hasDuration(b)))) merged[merged.length - 1] += ', ' + b;
-          else merged.push(b);
-        });
-        merged.forEach(function (chunk) {
-          var andParts = chunk.split(/\s+and\s+/i);
-          var acc = andParts[0];
-          for (var i = 1; i < andParts.length; i++) {
-            var right = andParts[i];
-            if (hasDuration(acc) || (wordCount(acc) >= 2 && wordCount(right) >= 2)) { parts.push(acc); acc = right; }
-            else acc += ' and ' + right;
-          }
-          parts.push(acc);
-        });
-        parts = parts.map(function (x) { return x.replace(/and_a_half/g, 'and a half'); });
-      });
-      parts.forEach(function (p) {
-        var t = parseOne(p, lineCat);
-        if (t.title && /[a-z0-9À-ž]/i.test(t.title)) out.push(t);
-      });
-    });
-    return out;
-  }
-
-  // ---------- Auto-categorizer ----------
-  var CAT_WORDS = {
-    School: 'study studying homework hw essay essays exam exams quiz quizzes test tests midterm midterms final finals class classes lecture lectures chapter chapters assignment assignments lab labs physics calc calculus math maths algebra geometry statistics stats chemistry chem biology bio history english spanish french latin literature ap sat act pset psets problem_set reading_assignment professor teacher syllabus flashcards revise revision thesis paper school course coursework textbook worksheet seminar tutor tutoring notes studyguide study_guide college university application applications scholarship psychology psych business marketing economics econ sociology philosophy government accounting anatomy physiology engineering cs programming art music discussion_post',
-    Work: 'client clients meeting meetings email emails inbox report reports deck slides presentation pitch proposal invoice invoices deploy website websites site landing code coding bug bugs pr standup sprint ticket tickets launch portfolio boss manager coworker team project projects deadline spreadsheet figma design mockup mockups brief contract onboarding interview resume linkedin agency demo shift wireframe copy seo analytics pull_request code_review follow_up',
-    Home: 'clean cleaning laundry dishes cook cooking dinner lunch breakfast vacuum tidy organize declutter repair trash garbage recycling garden plants bed room bedroom kitchen bathroom fridge closet mop dust iron ironing fold water_the_plants take_out meal_prep',
-    Errands: 'buy groceries grocery shop shopping pharmacy package return store target costco walmart mall hardware haircut pick_up drop_off post_office dry_cleaning car_wash oil_change gas_station',
-    Health: 'gym workout run running jog jogging exercise doctor dentist therapy therapist meditate meditation yoga sleep walk stretch stretching physio checkup appointment meds medicine vitamins swim swimming bike lift lifting cardio steps work_out',
-    Money: 'pay bill bills taxes tax budget budgeting insurance renew rent mortgage refund subscription subscriptions loan venmo transfer expenses receipts finances savings invest investing bank credit_card',
-    Personal: 'mom dad parents grandma grandpa family friend friends birthday gift gifts party date read reading book journal guitar piano drums practice hobby text call podcast movie travel trip pack packing vacation girlfriend boyfriend wife husband sister brother wedding church volunteer'
-  };
-  var CAT_INDEX = {}, CAT_PHRASES = [];
-  Object.keys(CAT_WORDS).forEach(function (cat) {
-    CAT_WORDS[cat].split(/\s+/).forEach(function (w) {
-      if (!w) return;
-      if (w.indexOf('_') >= 0) CAT_PHRASES.push([w.replace(/_/g, ' '), cat]);
-      else CAT_INDEX[w] = cat;
-    });
-  });
-  var STOP = { the: 1, and: 1, for: 1, with: 1, from: 1, into: 1, about: 1, this: 1, that: 1, some: 1, more: 1, all: 1, out: 1, off: 1, get: 1, make: 1, do: 1, finish: 1, start: 1, work: 0, my: 1, our: 1, your: 1, new: 1, before: 1, after: 1 };
-
-  function wordsOf(s, minLen) {
-    return String(s).toLowerCase().replace(/[^a-z0-9À-ž\s'-]/g, ' ').split(/\s+/).filter(function (w) { return w.length >= (minLen || 3) && !STOP[w]; });
-  }
-  function stem(w) { return w.replace(/(ies)$/, 'y').replace(/(ing|ed|es|s)$/, ''); }
-
-  function classify(title) {
-    var text = ' ' + String(title).toLowerCase() + ' ';
-    var score = {};
-    var add = function (cat, n) { score[cat] = (score[cat] || 0) + n; };
-    CAT_PHRASES.forEach(function (pc) { if (text.indexOf(' ' + pc[0] + ' ') >= 0) add(pc[1], 2.5); });
-    wordsOf(title, 2).forEach(function (w) {
-      var hit = CAT_INDEX[w] || CAT_INDEX[stem(w)];
-      if (hit) add(hit, 1);
-      var learned = state.learn[w] || state.learn[stem(w)];
-      if (learned) Object.keys(learned).forEach(function (cat) { add(cat, learned[cat] * 1.6); });
-    });
-    // A custom category whose name appears in the title wins outright.
-    usedCategories().forEach(function (cat) {
-      if (CATS.indexOf(cat) < 0 && text.indexOf(' ' + cat.toLowerCase() + ' ') >= 0) add(cat, 5);
-    });
-    var best = 'Other', bestScore = 0;
-    Object.keys(score).forEach(function (cat) { if (score[cat] > bestScore) { best = cat; bestScore = score[cat]; } });
-    return best;
-  }
-
-  // Remember which category the person put a task in, so similar wording lands there next time.
-  function learn(title, cat) {
-    wordsOf(title).forEach(function (w) {
-      var k = stem(w) || w;
-      var row = state.learn[k] || (state.learn[k] = {});
-      Object.keys(row).forEach(function (c) { if (c !== cat) row[c] = Math.max(0, row[c] - 0.5); });
-      row[cat] = Math.min((row[cat] || 0) + 1, 6);
-    });
-  }
-
+  // ---------- Categories ----------
   function usedCategories() {
     var seen = {};
     state.tasks.forEach(function (t) { seen[t.category] = true; });
@@ -386,31 +150,40 @@
     for (var i = 0; i < cat.length; i++) h = (h * 31 + cat.charCodeAt(i)) >>> 0;
     return 'var(--c-' + CATS[h % (CATS.length - 1)].toLowerCase() + ')';
   }
+  function allCategories() { return CATS.concat(usedCategories().filter(function (c) { return CATS.indexOf(c) < 0; })); }
+  function learn(title, cat) { TP.learn(state.learn, title, cat); }
 
   // ---------- Derived data ----------
-  function activePeriod() {
-    for (var i = 0; i < state.periods.length; i++) if (state.periods[i].id === state.activePeriodId) return state.periods[i];
-    return null;
+  function activePeriod() { return periodById(state.activePeriodId); }
+  function periodById(id) { for (var i = 0; i < state.periods.length; i++) if (state.periods[i].id === id) return state.periods[i]; return null; }
+  function isSession(p) { return !!p && p.kind === 'session'; }
+  // A session's tasks: its own, plus the week tasks it pulled in (they stay on the week).
+  function periodTasks(p) {
+    if (typeof p === 'string') p = periodById(p);
+    if (!p) return [];
+    var links = {};
+    if (isSession(p)) p.linkIds.forEach(function (id) { links[id] = true; });
+    return state.tasks.filter(function (t) { return t.periodId === p.id || links[t.id]; });
   }
-  function periodTasks(pid) { return state.tasks.filter(function (t) { return t.periodId === pid; }); }
   function taskById(id) { for (var i = 0; i < state.tasks.length; i++) if (state.tasks[i].id === id) return state.tasks[i]; return null; }
   function isRunning(t) { return !!(state.running && state.running.taskId === t.id); }
 
-  function loggedMs(t) {
+  function loggedMs(t, since) {
     var ms = 0;
-    t.logs.forEach(function (l) { ms += l.end - l.start; });
-    if (isRunning(t)) ms += Date.now() - state.running.start;
+    t.logs.forEach(function (l) {
+      if (since) { if (l.end > since) ms += l.end - Math.max(l.start, since); }
+      else ms += l.end - l.start;
+    });
+    if (isRunning(t)) ms += Date.now() - Math.max(state.running.start, since || 0);
     return ms;
   }
-  function loggedMin(t) { return loggedMs(t) / 60000; }
+  function loggedMin(t, since) { return loggedMs(t, since) / 60000; }
   function remainingMin(t) { return Math.max(t.estMin - loggedMin(t), 0); }
 
   function sortTasks(list) {
-    return list.slice().sort(function (a, b) {
-      return (PRI_RANK[a.priority] - PRI_RANK[b.priority]) || (a.order - b.order);
-    });
+    return list.slice().sort(function (a, b) { return (PRI_RANK[a.priority] - PRI_RANK[b.priority]) || (a.order - b.order); });
   }
-  function openTasks(pid) { return sortTasks(periodTasks(pid).filter(function (t) { return !t.done && !t.carried; })); }
+  function openTasks(p) { return sortTasks(periodTasks(p).filter(function (t) { return !t.done && !t.carried; })); }
 
   // Personal estimate accuracy across every finished task that has logged time.
   function accuracy() {
@@ -424,8 +197,33 @@
     return { n: n, factor: n >= 3 && est > 0 ? act / est : null };
   }
 
-  function metrics(p) {
-    var tasks = periodTasks(p.id);
+  // Context the parser uses: what you've learned, your history, your open tasks.
+  function parseCtx() {
+    var p = activePeriod(), acc = accuracy();
+    return {
+      learn: state.learn,
+      customCats: usedCategories().filter(function (c) { return CATS.indexOf(c) < 0; }),
+      history: state.tasks.filter(function (t) { return t.done; }).map(function (t) { return { title: t.title, actualMin: loggedMin(t) }; }),
+      factor: acc.factor,
+      openTitles: p ? openTasks(p).map(function (t) { return t.title; }) : []
+    };
+  }
+
+  function cutoff(p, avail) {
+    var cum = 0, cutIds = {}, cutCount = 0, cutMin = 0, cutting = false;
+    openTasks(p).forEach(function (t) {
+      var r = remainingMin(t);
+      cum += r;
+      if (!cutting && cum > avail + 0.01) cutting = true;
+      if (cutting) { cutIds[t.id] = true; cutCount++; cutMin += r; }
+    });
+    return { cutIds: cutIds, cutCount: cutCount, cutMin: cutMin };
+  }
+
+  function metrics(p) { return isSession(p) ? sessionMetrics(p) : weekMetrics(p); }
+
+  function weekMetrics(p) {
+    var tasks = periodTasks(p);
     var used = 0, remaining = 0, open = 0, done = 0;
     tasks.forEach(function (t) {
       var lg = loggedMin(t);
@@ -433,33 +231,50 @@
       else if (t.carried) { used += lg; }
       else { used += lg; remaining += remainingMin(t); open++; }
     });
-    var budget = p.budgetMin;
-    var total = used + remaining;
+    var budget = p.budgetMin, total = used + remaining;
     var ratio = budget > 0 ? total / budget : (total > 0 ? Infinity : 0);
     var status = !tasks.length ? 'idle' : ratio > 1 ? 'over' : ratio > 0.85 ? 'tight' : 'fits';
-
-    // Walk open tasks by priority and mark where the time left runs out.
-    var avail = budget - used, cum = 0, cutIds = {}, cutCount = 0, cutMin = 0, cutting = false;
-    openTasks(p.id).forEach(function (t) {
-      var r = remainingMin(t);
-      cum += r;
-      if (!cutting && cum > avail + 0.01) cutting = true;
-      if (cutting) { cutIds[t.id] = true; cutCount++; cutMin += r; }
-    });
-
-    var start = parseISO(p.start), endEx = addDays(parseISO(p.end), 1), now = Date.now();
-    var len = endEx - start;
+    var c = cutoff(p, budget - used);
+    var start = parseISO(p.start), endEx = addDays(parseISO(p.end), 1), now = Date.now(), len = endEx - start;
     return {
-      tasks: tasks, used: used, remaining: remaining, total: total, budget: budget, ratio: ratio,
-      status: status, open: open, done: done, cutIds: cutIds, cutCount: cutCount, cutMin: cutMin,
-      free: budget - total, left: budget - used,
+      session: false, tasks: tasks, used: used, remaining: remaining, total: total, budget: budget, ratio: ratio,
+      status: status, open: open, done: done, cutIds: c.cutIds, cutCount: c.cutCount, cutMin: c.cutMin,
+      free: budget - total, left: budget - used, need: remaining,
       elapsed: len > 0 ? Math.min(Math.max((now - start) / len, 0), 1) : 1,
       daysLeft: Math.max(Math.ceil((endEx - now) / DAY), 0),
       notStarted: now < start, ended: now >= endEx
     };
   }
 
-  // ---------- Rendering ----------
+  // A session counts only time worked since it started. With a set length it counts down
+  // in real time; without one, Tempo estimates how long the work (plus breaks) will take.
+  function sessionMetrics(p) {
+    var tasks = periodTasks(p), since = p.startedAt || 0, now = Date.now();
+    var used = 0, remaining = 0, open = 0, done = 0;
+    tasks.forEach(function (t) {
+      used += loggedMin(t, since);
+      if (t.done) done++;
+      else if (!t.carried) { remaining += remainingMin(t); open++; }
+    });
+    var breaksLeft = p.breaks ? Math.max(0, TP.breaksFor(used + remaining) - TP.breaksFor(used)) : 0;
+    var need = remaining + breaksLeft;
+    var auto = p.budgetMin == null;
+    var endAt = p.closed && p.endedAt ? p.endedAt : now;
+    var budget, left;
+    if (auto) { budget = Math.max(used + need, 1); left = need; }
+    else { budget = p.budgetMin; left = budget - (endAt - since) / 60000; }
+    var status = !tasks.length ? 'idle' : auto ? 'fits' : need > left ? 'over' : need > left * 0.85 ? 'tight' : 'fits';
+    var c = auto ? { cutIds: {}, cutCount: 0, cutMin: 0 } : cutoff(p, Math.max(left, 0) - breaksLeft);
+    return {
+      session: true, auto: auto, tasks: tasks, used: used, remaining: remaining, breaksLeft: breaksLeft, need: need,
+      budget: budget, left: left, total: used + need, free: left - need, status: status, open: open, done: done,
+      cutIds: c.cutIds, cutCount: c.cutCount, cutMin: c.cutMin,
+      finishBy: now + need * 60000, endsAt: auto ? null : since + p.budgetMin * 60000,
+      ended: !auto && left <= 0
+    };
+  }
+
+  // ---------- Icons ----------
   var ICON = {
     play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10.5-6.5z"/></svg>',
     pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="5" width="4" height="14" rx="1"/><rect x="13.5" y="5" width="4" height="14" rx="1"/></svg>',
@@ -467,49 +282,70 @@
     grip: '<svg viewBox="0 0 10 16" aria-hidden="true"><circle cx="2.5" cy="3" r="1.4"/><circle cx="7.5" cy="3" r="1.4"/><circle cx="2.5" cy="8" r="1.4"/><circle cx="7.5" cy="8" r="1.4"/><circle cx="2.5" cy="13" r="1.4"/><circle cx="7.5" cy="13" r="1.4"/></svg>',
     note: '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" style="vertical-align:-1px;fill:currentColor"><path d="M3 2h10v8l-4 4H3zm1.5 1.5v9H8V9h3.5V3.5z"/></svg>',
     sun: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><g stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></g></svg>',
-    moon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>',
-    auto: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18zm0 2v14a7 7 0 0 1 0-14z" fill-rule="evenodd"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/></svg>'
+    moon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>'
   };
 
   function setText(sel, txt) { var el = $(sel); if (el) el.textContent = txt; }
 
+  // ---------- Render ----------
   function render() {
     applyTheme();
     var p = activePeriod();
-    var onboard = $('#onboard'), dash = $('#dashboard'), sel = $('#period-select');
+    var onboard = $('#onboard'), dash = $('#dashboard');
     if (onboard) onboard.hidden = !!p;
     if (dash) dash.hidden = !p;
-    if (sel) {
-      sel.hidden = state.periods.length < 2;
-      sel.innerHTML = state.periods.slice().reverse().map(function (x) {
-        return '<option value="' + esc(x.id) + '"' + (x.id === state.activePeriodId ? ' selected' : '') + '>' + esc(x.name) + (x.closed ? ' (closed)' : '') + '</option>';
-      }).join('');
-    }
+    document.body.classList.toggle('is-session', isSession(p));
+    renderPeriodSelect();
     if (!p) return;
     var m = metrics(p);
     renderHead(p, m);
     renderClock(p, m);
     renderNow(p, m);
     renderFit(p, m);
+    renderBanner(p, m);
     renderGroups(p, m);
   }
 
+  function renderPeriodSelect() {
+    var sel = $('#period-select');
+    if (!sel) return;
+    sel.hidden = state.periods.length < 2;
+    var opt = function (x) {
+      var label = x.name + (x.closed ? (isSession(x) ? ' (ended)' : ' (closed)') : '');
+      return '<option value="' + esc(x.id) + '"' + (x.id === state.activePeriodId ? ' selected' : '') + '>' + esc(label) + '</option>';
+    };
+    var weeks = state.periods.filter(function (x) { return !isSession(x); }).slice().reverse();
+    var sessions = state.periods.filter(isSession).slice().reverse().slice(0, 12);
+    sel.innerHTML = (weeks.length ? '<optgroup label="Weeks">' + weeks.map(opt).join('') + '</optgroup>' : '') +
+      (sessions.length ? '<optgroup label="Study sessions">' + sessions.map(opt).join('') + '</optgroup>' : '');
+  }
+
   function renderHead(p, m) {
-    var dates = fmtRange(p);
-    if (p.closed) dates += ' · closed';
-    else if (m.notStarted) dates += ' · starts in ' + daysBetween(today(), parseISO(p.start)) + 'd';
-    else if (m.ended) dates += ' · ended';
-    else dates += ' · ' + m.daysLeft + (m.daysLeft === 1 ? ' day' : ' days') + ' left';
-    setText('#period-dates', dates);
+    var line;
+    if (isSession(p)) {
+      line = 'Study session · ' + (p.closed ? 'ended ' + fmtTime(p.endedAt || Date.now()) : 'started ' + fmtTime(p.startedAt));
+      var parent = periodById(p.parentId);
+      if (parent) line += ' · from ' + parent.name;
+    } else {
+      line = fmtRange(p);
+      if (p.closed) line += ' · closed';
+      else if (m.notStarted) line += ' · starts in ' + daysBetween(today(), parseISO(p.start)) + 'd';
+      else if (m.ended) line += ' · ended';
+      else line += ' · ' + m.daysLeft + (m.daysLeft === 1 ? ' day' : ' days') + ' left';
+    }
+    setText('#period-dates', line);
     setText('#period-name', p.name);
+    var edit = $('#edit-period-btn');
+    if (edit) edit.textContent = isSession(p) && !p.closed ? 'End' : 'Edit';
+    var ses = $('#session-btn');
+    if (ses) ses.hidden = isSession(p);
   }
 
   // ---------- The chronograph ----------
-  // Big dial: total time left in the period (hour hand on the budget scale, minute hand,
-  // ticking second hand, exact readout window). Left sub-dial: stopwatch for the current
-  // task. Right sub-dial: how complete that task is against its estimate.
-  // Built with the target document's own createElementNS, so the same builder draws
-  // the main clock and the pop-out window's clock.
+  // Big dial: time left (hour hand on the budget scale; minutes scale for short sessions),
+  // minute hand, ticking second hand, exact readout window. Left sub-dial: stopwatch for the
+  // current task. Right sub-dial: how complete that task is against its estimate.
+  // Built with the target document's own createElementNS so the pop-out window can reuse it.
   var SVGNS = 'http://www.w3.org/2000/svg';
   // Colours come from CSS tokens (--ch-*) so the watch has a light and a dark face.
   var CH = { face: 'var(--ch-face)', bezel: 'var(--ch-bezel)', sub: 'var(--ch-sub)', subLine: 'var(--ch-subline)', ink: 'var(--ch-ink)', dim: 'var(--ch-dim)' };
@@ -540,7 +376,6 @@
     sv(g, 'text', { x: p[0].toFixed(2), y: p[1].toFixed(2), 'text-anchor': 'middle', 'dominant-baseline': 'central',
       'font-family': F_NUM, 'font-size': size, 'font-weight': weight || 600, fill: CH.ink }, text);
   }
-  // Hands are drawn pointing at 12; the returned setter rotates them.
   function svHand(parent, cx, cy, draw) {
     var g = sv(parent, 'g', { class: 'ch-hand' });
     draw(g);
@@ -558,31 +393,28 @@
     var cx = 110, cy = 110, sx1 = cx - 42, sx2 = cx + 42;
     sv(svg, 'circle', { cx: cx, cy: cy, r: 108, fill: CH.bezel });
     sv(svg, 'circle', { cx: cx, cy: cy, r: 101, fill: CH.face });
-    // Minute track: 60 marks, longer every 5.
     var track = sv(svg, 'g', {});
     for (var i = 0; i < 60; i++) svTick(track, cx, cy, i % 5 ? 94 : 89, 98, i / 60, i % 5 ? .6 : 1.8);
     var numerals = sv(svg, 'g', {});
     sv(svg, 'text', { x: cx, y: cy - 50, 'text-anchor': 'middle', 'font-family': 'Instrument Serif, Georgia, serif', 'font-style': 'italic', 'font-size': 14, fill: CH.ink }, 'Tempo');
-    sv(svg, 'text', { x: cx, y: cy - 39, 'text-anchor': 'middle', 'font-family': F_MONO, 'font-size': 4.6, 'letter-spacing': 1.4, fill: CH.dim }, 'HOURS LEFT');
+    var faceLabel = sv(svg, 'text', { x: cx, y: cy - 39, 'text-anchor': 'middle', 'font-family': F_MONO, 'font-size': 4.6, 'letter-spacing': 1.4, fill: CH.dim }, 'HOURS LEFT');
 
-    // A simple sub-dial: 4 main marks, 8 minor, an optional progress arc, one hand, a label.
     function subDial(sx, label) {
       sv(svg, 'circle', { cx: sx, cy: cy, r: 23, fill: CH.sub, stroke: CH.subLine, 'stroke-width': .8 });
       var arcEl = sv(svg, 'circle', { cx: sx, cy: cy, r: 19, fill: 'none', stroke: CH.ink, 'stroke-width': 2.2, 'stroke-opacity': .85,
         pathLength: 100, 'stroke-dasharray': '0 100', transform: 'rotate(-90 ' + sx + ' ' + cy + ')' });
       for (var j = 0; j < 12; j++) svTick(svg, sx, cy, j % 3 ? 20 : 17.5, 22.5, j / 12, j % 3 ? .5 : 1.2);
-      var lab = sv(svg, 'text', { x: sx, y: cy + 15.6, 'text-anchor': 'middle', 'font-family': F_MONO, 'font-size': 3.5, 'letter-spacing': .5, fill: CH.dim }, label);
+      sv(svg, 'text', { x: sx, y: cy + 15.6, 'text-anchor': 'middle', 'font-family': F_MONO, 'font-size': 3.5, 'letter-spacing': .5, fill: CH.dim }, label);
       var val = sv(svg, 'text', { x: sx, y: cy + 9, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-family': F_NUM, 'font-size': 7.5, 'font-weight': 600, fill: CH.ink }, '');
       var setHand = svHand(svg, sx, cy, function (g) {
         sv(g, 'line', { x1: sx, y1: cy + 4, x2: sx, y2: cy - 20, stroke: CH.ink, 'stroke-width': 1.3, 'stroke-linecap': 'round' });
         sv(g, 'circle', { cx: sx, cy: cy, r: 2.3, fill: CH.ink });
       });
-      return { hand: setHand, arc: arcEl, label: lab, value: val };
+      return { hand: setHand, arc: arcEl, value: val };
     }
     var taskDial = subDial(sx1, 'TASK TIME');
     var doneDial = subDial(sx2, 'TASK DONE');
 
-    // Readout window at 6 o'clock.
     sv(svg, 'rect', { x: cx - 27, y: cy + 50, width: 54, height: 15, rx: 2.5, fill: CH.sub, stroke: CH.subLine, 'stroke-width': .8 });
     var readout = sv(svg, 'text', { x: cx, y: cy + 57.8, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-family': F_MONO, 'font-size': 8.4, fill: CH.ink }, '');
 
@@ -601,24 +433,32 @@
     sv(svg, 'circle', { cx: cx, cy: cy, r: 4.2, fill: CH.ink });
     sv(svg, 'circle', { cx: cx, cy: cy, r: 1.5, fill: CH.face });
 
+    // Numerals: minutes for anything up to 6 hours, hours beyond. They sit on the real
+    // budget, so the hand and the scale always agree (a 4h30 session tops out at 270).
     var numeralsFor = null;
-    function drawNumerals(budgetH) {
-      if (numeralsFor === budgetH) return;
-      numeralsFor = budgetH;
+    function drawNumerals(budgetSec) {
+      var mins = Math.max(budgetSec / 60, 1), minuteMode = mins <= 360;
+      var key = (minuteMode ? 'm' : 'h') + Math.round(mins / 5);
+      if (numeralsFor === key) return;
+      numeralsFor = key;
       while (numerals.firstChild) numerals.removeChild(numerals.firstChild);
-      var step = budgetH <= 12 ? 1 : budgetH <= 24 ? 2 : budgetH <= 48 ? 4 : budgetH <= 60 ? 5 : 10;
-      for (var h = 0; h < budgetH - step / 2; h += step) {
-        var label = h === 0 ? String(Math.round(budgetH)) : String(h);
-        svNum(numerals, cx, cy, 78, h / budgetH, label, h === 0 ? 15 : 12.5);
+      if (minuteMode) {
+        var mstep = mins <= 60 ? 10 : mins <= 120 ? 15 : 30;
+        svNum(numerals, cx, cy, 78, 0, String(Math.round(mins / 5) * 5), 15);
+        for (var m = mstep; m < mins - mstep / 2; m += mstep) svNum(numerals, cx, cy, 78, m / mins, String(m), 12);
+        return;
       }
+      var hours = mins / 60;
+      var step = hours <= 12 ? 1 : hours <= 24 ? 2 : hours <= 48 ? 4 : hours <= 60 ? 5 : 10;
+      svNum(numerals, cx, cy, 78, 0, String(Math.round(hours)), 15);
+      for (var h = step; h < hours - step / 2; h += step) svNum(numerals, cx, cy, 78, h / hours, String(h), 12.5);
     }
-
     function setArc(el, frac) { el.setAttribute('stroke-dasharray', (Math.max(0, Math.min(frac, 1)) * 100).toFixed(2) + ' 100'); }
 
-    // s: { left (sec, may be negative), budget (sec), task: { spent, est } | null }
+    // s: { left (sec, may be negative), budget (sec), label, task: { spent, est } | null }
     return function update(s) {
-      var budgetH = Math.max(s.budget / 3600, 1);
-      drawNumerals(budgetH);
+      drawNumerals(s.budget);
+      faceLabel.textContent = s.label || (s.budget / 60 <= 360 ? 'MINUTES LEFT' : 'HOURS LEFT');
       var L = Math.max(s.left, 0), whole = Math.floor(L);
       hourHand(Math.min(L / Math.max(s.budget, 1), 1));
       minuteHand((L % 3600) / 3600);
@@ -627,7 +467,6 @@
       readout.textContent = over
         ? '+' + Math.floor(ov / 3600) + ':' + pad(Math.floor(ov / 60) % 60) + ' OVER'
         : Math.floor(whole / 3600) + ':' + pad(Math.floor(whole / 60) % 60) + ':' + pad(whole % 60);
-
       if (s.task) {
         var spent = Math.floor(s.task.spent);
         taskDial.hand((spent % 3600) / 3600);
@@ -644,16 +483,18 @@
     };
   }
 
-  function chronoState(m, cur) {
+  function chronoState(p, m, cur) {
+    var label = null;
+    if (m.session) label = (m.auto ? 'TO FINISH' : 'SESSION LEFT') + (m.budget <= 360 ? ' · MIN' : ' · HRS');
     return {
-      left: m.left * 60, budget: m.budget * 60,
+      left: m.left * 60, budget: m.budget * 60, label: label,
       task: cur ? { spent: loggedMs(cur.task) / 1000, est: cur.task.estMin * 60 } : null
     };
   }
   function currentTask(p) {
     var running = state.running && taskById(state.running.taskId);
-    if (running && running.periodId === p.id) return { task: running, running: true };
-    var next = openTasks(p.id)[0];
+    if (running && periodTasks(p).indexOf(running) >= 0) return { task: running, running: true };
+    var next = openTasks(p)[0];
     return next ? { task: next, running: false } : null;
   }
 
@@ -662,41 +503,52 @@
     var svg = $('#chrono');
     if (!svg) return;
     if (!mainChrono) mainChrono = buildChrono(svg);
-    var cur = currentTask(p), cs = chronoState(m, cur);
+    var cur = currentTask(p), cs = chronoState(p, m, cur);
     mainChrono(cs);
     var wrap = $('#clock');
     if (wrap) wrap.classList.toggle('is-running', !!(cur && cur.running));
     var over = m.left < 0;
-    svg.setAttribute('aria-label', (over ? fmt(-m.left) + ' over budget' : fmt(m.left) + ' left to work') + ' of ' + fmt(m.budget) +
+    svg.setAttribute('aria-label', (over ? fmt(-m.left) + ' over' : fmt(m.left) + (m.session && m.auto ? ' to finish' : ' left')) +
       (cur ? '. ' + (cur.running ? 'Working on ' : 'Up next: ') + cur.task.title : ''));
-    setText('#clock-sub', 'of ' + fmt(m.budget) + ' · ' + fmt(m.used) + ' worked');
-    setText('#lg-left', m.left >= 0 ? fmt(m.left) : '−' + fmt(-m.left));
-    setText('#lg-work', fmt(m.remaining));
+    if (m.session) {
+      setText('#clock-sub', m.auto ? fmt(m.remaining) + ' work' + (m.breaksLeft ? ' + ' + fmt(m.breaksLeft) + ' breaks' : '') : 'of ' + fmt(m.budget) + ' · ' + fmt(m.used) + ' worked');
+      setText('#lg-left-label', m.auto ? 'Work left' : 'Session ends');
+      setText('#lg-left', m.auto ? fmt(m.remaining) : fmtTime(m.endsAt));
+      setText('#lg-work-label', 'Worked');
+      setText('#lg-work', fmt(m.used));
+    } else {
+      setText('#clock-sub', 'of ' + fmt(m.budget) + ' · ' + fmt(m.used) + ' worked');
+      setText('#lg-left-label', 'Time left');
+      setText('#lg-left', m.left >= 0 ? fmt(m.left) : '−' + fmt(-m.left));
+      setText('#lg-work-label', 'Work planned');
+      setText('#lg-work', fmt(m.remaining));
+    }
     renderMini(p, m, cs, cur);
   }
 
   function renderNow(p, m) {
     var box = $('#now');
     if (!box) return;
-    var running = state.running && taskById(state.running.taskId);
-    if (running && running.periodId === p.id) {
+    var cur = currentTask(p);
+    if (cur && cur.running) {
+      var t = cur.task;
       box.className = 'now is-running';
-      box.innerHTML = '<div class="now-text"><span class="now-label">Working on · <span data-live="' + esc(running.id) + '">' + fmt(loggedMin(running)) + '</span> of ' + fmt(running.estMin) + '</span>' +
-        '<span class="now-title">' + esc(running.title) + '</span></div>' +
-        '<button type="button" class="icon-btn" data-now="focus" data-id="' + esc(running.id) + '" aria-label="Focus mode" title="Focus mode">' + ICON.focus + '</button>' +
-        '<button type="button" class="btn btn-primary btn-sm" data-now="toggle" data-id="' + esc(running.id) + '">' + 'Pause</button>';
+      box.innerHTML = '<div class="now-text"><span class="now-label">Working on · <span data-live="' + esc(t.id) + '">' + fmt(loggedMin(t)) + '</span> of ' + fmtEst(t) + '</span>' +
+        '<span class="now-title">' + esc(t.title) + '</span></div>' +
+        '<button type="button" class="icon-btn" data-now="focus" data-id="' + esc(t.id) + '" aria-label="Focus mode" title="Focus mode">' + ICON.focus + '</button>' +
+        '<button type="button" class="btn btn-primary btn-sm" data-now="toggle" data-id="' + esc(t.id) + '">Pause</button>';
       return;
     }
-    var next = openTasks(p.id)[0];
     box.className = 'now';
-    if (!next) {
+    if (!cur) {
       box.innerHTML = '<div class="now-text"><span class="now-label">Up next</span><span class="now-title">Nothing left. Add tasks on the right.</span></div>';
       return;
     }
-    box.innerHTML = '<div class="now-text"><span class="now-label">Up next · ' + esc(next.category) + '</span>' +
-      '<span class="now-title">' + esc(next.title) + '</span></div>' +
-      '<button type="button" class="icon-btn" data-now="focus" data-id="' + esc(next.id) + '" aria-label="Focus mode" title="Focus mode">' + ICON.focus + '</button>' +
-      '<button type="button" class="btn btn-primary btn-sm" data-now="toggle" data-id="' + esc(next.id) + '">Start</button>';
+    var n = cur.task;
+    box.innerHTML = '<div class="now-text"><span class="now-label">Up next · ' + esc(n.category) + ' · ' + fmtEst(n) + '</span>' +
+      '<span class="now-title">' + esc(n.title) + '</span></div>' +
+      '<button type="button" class="icon-btn" data-now="focus" data-id="' + esc(n.id) + '" aria-label="Focus mode" title="Focus mode">' + ICON.focus + '</button>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-now="toggle" data-id="' + esc(n.id) + '">Start</button>';
   }
 
   function renderFit(p, m) {
@@ -704,15 +556,28 @@
     var pill = $('#sum-status');
     if (pill) {
       pill.className = 'status-pill is-' + m.status;
-      pill.textContent = { idle: 'No tasks yet', fits: 'Everything fits', tight: 'Tight fit', over: 'Plan is ' + fmt(m.total - m.budget) + ' over' }[m.status];
+      var text;
+      if (m.session && m.auto) text = m.open ? 'Done by ' + fmtTime(m.finishBy) : (m.tasks.length ? 'All done' : 'No tasks yet');
+      else if (m.session) text = { idle: 'No tasks yet', fits: 'You’ll finish in time', tight: 'Tight fit', over: fmt(m.need - Math.max(m.left, 0)) + ' short' }[m.status];
+      else text = { idle: 'No tasks yet', fits: 'Everything fits', tight: 'Tight fit', over: 'Plan is ' + fmt(m.total - m.budget) + ' over' }[m.status];
+      pill.textContent = text;
     }
-    var realistic = acc.factor ? m.used + m.remaining * acc.factor : null;
 
-    var pace = $('#st-pace'), paceSub = '';
-    if (pace) {
-      var word = '–', tone = '';
-      if (!m.tasks.length) { /* nothing yet */ }
-      else if (m.notStarted) { word = 'Not started'; paceSub = 'period hasn’t begun'; }
+    var pace = $('#st-pace'), paceSub = '', word = '–', tone = '';
+    setText('#st-pace-label', m.session ? (m.auto ? 'Tasks' : 'Finish by') : 'Pace');
+    if (m.session) {
+      if (!m.tasks.length) { word = '–'; paceSub = 'add or pick tasks'; }
+      else if (!m.open) { word = 'All done'; tone = 'tone-ok'; paceSub = fmt(m.used) + ' worked'; }
+      else if (m.auto) {
+        word = m.open + ' left';
+        paceSub = m.done + ' done' + (m.breaksLeft ? ' · ' + fmt(m.breaksLeft) + ' of breaks planned' : '');
+      } else {
+        word = fmtTime(m.finishBy);
+        paceSub = fmt(m.remaining) + ' work' + (m.breaksLeft ? ' + ' + fmt(m.breaksLeft) + ' breaks' : '');
+        if (m.need > Math.max(m.left, 0)) { tone = 'tone-bad'; paceSub += ' · needs ' + fmt(m.need - Math.max(m.left, 0)) + ' more'; }
+      }
+    } else if (m.tasks.length) {
+      if (m.notStarted) { word = 'Not started'; paceSub = 'period hasn’t begun'; }
       else if (m.open === 0) { word = 'All done'; tone = 'tone-ok'; paceSub = 'nothing left to do'; }
       else if (m.ended || p.closed) { word = 'Ended'; tone = 'tone-warn'; paceSub = fmt(m.remaining) + ' unfinished'; }
       else {
@@ -721,55 +586,79 @@
         tone = diff > 0.1 ? 'tone-ok' : diff < -0.1 ? 'tone-bad' : '';
         paceSub = '~' + fmt(m.daysLeft > 0 ? m.remaining / m.daysLeft : m.remaining) + '/day for ' + m.daysLeft + 'd';
       }
-      pace.textContent = word;
-      pace.className = tone;
     }
+    if (pace) { pace.textContent = word; pace.className = tone; }
     setText('#st-pace-sub', paceSub);
 
     var accEl = $('#st-acc'), accSub = '';
     if (accEl) {
+      var realistic = acc.factor ? m.used + m.remaining * acc.factor : null;
       if (!acc.factor) {
         accEl.textContent = '–'; accEl.className = '';
         accSub = 'time ' + (3 - acc.n) + ' more finished task' + (3 - acc.n === 1 ? '' : 's') + ' to learn this';
       } else {
         var d = Math.round((acc.factor - 1) * 100);
         if (Math.abs(d) <= 10) { accEl.textContent = 'Spot on'; accEl.className = 'tone-ok'; accSub = 'within 10% of your estimates'; }
-        else if (d > 0) { accEl.textContent = '+' + d + '% longer'; accEl.className = 'tone-warn'; accSub = 'realistic total: ' + fmt(realistic); }
-        else { accEl.textContent = Math.abs(d) + '% faster'; accEl.className = 'tone-ok'; accSub = 'realistic total: ' + fmt(realistic); }
+        else if (d > 0) { accEl.textContent = '+' + d + '% longer'; accEl.className = 'tone-warn'; accSub = 'new guesses include this'; }
+        else { accEl.textContent = Math.abs(d) + '% faster'; accEl.className = 'tone-ok'; accSub = 'new guesses include this'; }
+        if (realistic && !m.session) accSub = 'realistic total: ' + fmt(realistic);
       }
     }
     setText('#st-acc-sub', accSub);
   }
 
-  function dueInfo(t) {
+  // A week that has run out, or a session past its time, gets a nudge to wrap up.
+  function renderBanner(p, m) {
+    var b = $('#banner');
+    if (!b) return;
+    var html = '';
+    if (!p.closed && !isSession(p) && m.ended) {
+      html = '<span><b>' + esc(p.name) + ' ended ' + parseISO(p.end).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + '.</b> Close it to see how it went and carry unfinished tasks into the next one.</span>' +
+        '<button type="button" class="btn btn-primary btn-sm" data-action="close-period">Close &amp; plan next</button>';
+    } else if (!p.closed && isSession(p) && !m.auto && m.ended) {
+      html = '<span><b>Session time is up.</b> Keep going or wrap it up.</span><button type="button" class="btn btn-primary btn-sm" data-action="close-period">End session</button>';
+    } else if (!p.closed && isSession(p) && m.tasks.length && !m.open) {
+      html = '<span><b>Everything in this session is done.</b> ' + fmt(m.used) + ' worked.</span><button type="button" class="btn btn-primary btn-sm" data-action="close-period">End session</button>';
+    }
+    b.innerHTML = html;
+    b.hidden = !html;
+  }
+
+  function dueInfo(t, p) {
     if (!t.due) return null;
     var d = daysBetween(today(), parseISO(t.due));
     var cls = !t.done && d < 0 ? 'is-late' : !t.done && d <= 1 ? 'is-soon' : '';
     var label = d === 0 ? 'Due today' : d === 1 ? 'Due tomorrow' : d === -1 ? 'Due yesterday' : 'Due ' + fmtShortDate(t.due);
+    if (p && !isSession(p) && !t.done && t.due > p.end) { cls = 'is-after'; label += ' · after this week'; }
     return { cls: cls, label: label };
   }
 
-  function taskHTML(t, m) {
+  function taskHTML(t, m, p) {
     var lg = loggedMin(t), running = isRunning(t);
     var cls = ['task'];
     if (t.done) cls.push('is-done');
     if (t.carried) cls.push('is-carried');
     if (running) cls.push('is-running');
     if (m.cutIds[t.id]) cls.push('no-fit');
-    var due = dueInfo(t);
+    if (ui.flash[t.id]) cls.push('is-new');
+    var due = dueInfo(t, p);
     var meta = ['<span class="pri pri-' + t.priority + '">' + PRI_LABEL[t.priority] + '</span>'];
     if (m.cutIds[t.id]) meta.push('<span class="nofit-tag">won’t fit</span>');
     if (due) meta.push('<span class="due ' + due.cls + '">' + esc(due.label) + '</span>');
     if (t.carried) meta.push('<span>moved to next period</span>');
+    if (isSession(p) && t.periodId !== p.id && periodById(t.periodId)) meta.push('<span>from ' + esc(periodById(t.periodId).name) + '</span>');
     if (t.notes) meta.push('<span title="Has notes">' + ICON.note + ' note</span>');
     var progress = t.estMin > 0 ? Math.min(lg / t.estMin, 1) : (lg > 0 ? 1 : 0);
     var canDrag = !t.done && !t.carried;
+    var est = ui.estEditing === t.id
+      ? '<input class="est-input" data-est-input="' + esc(t.id) + '" value="' + esc(fmt(t.estMin)) + '" aria-label="Estimate for ' + esc(t.title) + '">'
+      : '<button type="button" class="est' + (t.estGuess ? ' is-guess' : '') + '" data-est="' + esc(t.id) + '" title="' + (t.estGuess ? 'Tempo’s guess. Click to change.' : 'Click to change the estimate') + '">' + fmtEst(t) + '</button>';
     return '<li class="' + cls.join(' ') + '" data-id="' + esc(t.id) + '"' + (canDrag ? ' draggable="true"' : '') + '>' +
       '<span class="grip" aria-hidden="true">' + (canDrag ? ICON.grip : '') + '</span>' +
       '<input type="checkbox" class="check" aria-label="Mark “' + esc(t.title) + '” done"' + (t.done ? ' checked' : '') + (t.carried ? ' disabled' : '') + '>' +
       '<div class="task-main"><button type="button" class="task-title">' + esc(t.title) + '</button>' +
       '<div class="task-meta">' + meta.join('') + '</div></div>' +
-      '<div class="task-time"><span class="logged" data-live="' + esc(t.id) + '">' + (lg >= 0.5 || running ? fmt(lg) : '–') + '</span> / <span class="est">' + fmt(t.estMin) + '</span>' +
+      '<div class="task-time"><span class="logged" data-live="' + esc(t.id) + '">' + (lg >= 0.5 || running ? fmt(lg) : '–') + '</span> / ' + est +
       '<span class="task-bar' + (t.estMin > 0 && lg > t.estMin ? ' is-overrun' : '') + '"><i style="width:' + (progress * 100).toFixed(1) + '%"></i></span></div>' +
       '<div class="task-btns">' +
       (canDrag ?
@@ -779,12 +668,14 @@
   }
 
   function renderGroups(p, m) {
-    var box = $('#groups'), empty = $('#empty'), note = $('#nofit-note');
+    var box = $('#groups'), empty = $('#empty'), note = $('#nofit-note'), more = $('#show-done');
     if (!box) return;
     var q = ui.search.trim().toLowerCase();
     var match = function (t) { return !q || (t.title + ' ' + t.category + ' ' + t.notes).toLowerCase().indexOf(q) >= 0; };
+    var closedCount = 0;
     var visible = m.tasks.filter(function (t) {
       var closed = t.done || t.carried;
+      if (closed && match(t)) closedCount++;
       if (ui.filter === 'open' && closed) return false;
       if (ui.filter === 'done' && !closed) return false;
       return match(t);
@@ -793,7 +684,6 @@
     var groups = {};
     visible.forEach(function (t) { (groups[t.category] || (groups[t.category] = [])).push(t); });
     var cats = Object.keys(groups).sort(catOrder);
-
     box.innerHTML = cats.map(function (cat) {
       var list = groups[cat];
       var open = sortTasks(list.filter(function (t) { return !t.done && !t.carried; }));
@@ -803,9 +693,13 @@
       return '<section class="cat-group" data-cat="' + esc(cat) + '" style="--cat:' + catColor(cat) + '">' +
         '<header class="cat-head"><h2 class="cat-name">' + esc(cat) + '</h2><span class="cat-count">' + count + '</span>' +
         (open.length ? '<span class="cat-time">' + fmt(left) + '</span>' : '') + '</header>' +
-        '<ol class="tasks">' + open.concat(closed).map(function (t) { return taskHTML(t, m); }).join('') + '</ol></section>';
+        '<ol class="tasks">' + open.concat(closed).map(function (t) { return taskHTML(t, m, p); }).join('') + '</ol></section>';
     }).join('');
 
+    if (more) {
+      more.hidden = !(ui.filter === 'open' && closedCount);
+      more.textContent = 'Show ' + closedCount + ' done';
+    }
     if (note) {
       note.hidden = !m.cutCount || ui.filter === 'done';
       note.textContent = m.cutCount + (m.cutCount === 1 ? ' task' : ' tasks') + ' (' + fmt(m.cutMin) + ') won’t fit in the time left';
@@ -815,9 +709,16 @@
       if (!visible.length) {
         if (q) empty.innerHTML = '<b>No matches</b>Try a different search.';
         else if (ui.filter === 'done') empty.innerHTML = '<b>Nothing finished yet</b>Check off a task and it shows up here.';
-        else if (m.tasks.length) empty.innerHTML = '<b>All clear</b>Everything in this period is done. Nice work.';
+        else if (m.tasks.length) empty.innerHTML = '<b>All clear</b>Everything here is done. Nice work.';
+        else if (isSession(p)) empty.innerHTML = '<b>An empty session</b>Tell Tempo what you’re going to work on, and it’ll estimate how long it takes.';
         else empty.innerHTML = '<b>Nothing here yet</b>Tell Tempo what you need to do above, the way you’d say it.';
       }
+    }
+    // Newly added tasks: bring the first one into view, then let the highlight fade.
+    var fresh = $('.task.is-new', box);
+    if (fresh && ui.scrollToNew) {
+      ui.scrollToNew = false;
+      try { fresh.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) { fresh.scrollIntoView(); }
     }
   }
 
@@ -831,6 +732,11 @@
     if (p) renderClock(p, metrics(p));
     document.title = '▶ ' + fmtClock(loggedMs(t)) + ' · ' + t.title;
     if (ui.focusId) renderFocus();
+    // Say so once when a task runs past its estimate.
+    if (t.estMin > 0 && loggedMin(t) >= t.estMin && !ui.warned[t.id]) {
+      ui.warned[t.id] = true;
+      notify('Estimate reached', '“' + t.title + '” has hit its ' + fmt(t.estMin) + ' estimate.');
+    }
   }
 
   // ---------- Theme ----------
@@ -850,12 +756,14 @@
       btn.setAttribute('aria-label', dark ? 'Switch to light mode' : 'Switch to dark mode');
       btn.title = (dark ? 'Light mode' : 'Dark mode') + ' (t)';
     }
+    var meta = $('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', dark ? '#131311' : '#f4f1ea');
     var sys = $('[data-action="system-theme"]');
     if (sys) sys.hidden = mode !== 'light' && mode !== 'dark';
   }
   function cycleTheme() {
     state.settings.theme = effectiveTheme() === 'dark' ? 'light' : 'dark';
-    save(); applyTheme();
+    save({ quiet: true }); applyTheme();
     if (mini.canvas) render();
     toast(state.settings.theme === 'dark' ? 'Dark mode' : 'Light mode');
   }
@@ -870,7 +778,7 @@
     var b = $('button', el);
     if (b && action) b.addEventListener('click', function () { action(); el.classList.remove('is-on'); });
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { el.classList.remove('is-on'); }, actionLabel ? 6000 : 3000);
+    toastTimer = setTimeout(function () { el.classList.remove('is-on'); }, actionLabel ? 6000 : 3200);
   }
 
   // ---------- Timer ----------
@@ -892,21 +800,93 @@
     save(); render();
   }
 
-  // ---------- Task actions ----------
-  function addParsed(items) {
+  // ---------- Adding tasks (editable preview) ----------
+  // The preview is re-parsed as you type; your edits to a row (title, estimate, category,
+  // skip/keep) are remembered by that row's original wording, so typing more doesn't undo them.
+  function previewKey(t, i) { return (t.title || '').toLowerCase() + '|' + i; }
+
+  function buildPreview() {
+    var input = $('#dump-input');
+    var text = input ? input.value : '';
+    var items = text.trim() ? TP.parseDump(text, parseCtx()) : [];
+    var keys = {};
+    ui.preview = items.map(function (t, i) {
+      var key = previewKey(t, i);
+      keys[key] = true;
+      var e = ui.edits[key] || {};
+      var row = Object.assign({}, t, { key: key });
+      if (e.title != null) row.title = e.title;
+      if (e.estMin != null) { row.estMin = e.estMin; row.estGuess = false; }
+      if (e.category) { row.category = e.category; row.catAuto = false; row.catEdited = true; }
+      row.include = e.include != null ? e.include : !(t.skip || t.dup);
+      return row;
+    });
+    Object.keys(ui.edits).forEach(function (k) { if (!keys[k]) delete ui.edits[k]; });
+  }
+
+  function renderPreview() {
+    var box = $('#dump-preview');
+    if (!box) return;
+    buildPreview();
+    var cats = allCategories();
+    box.innerHTML = ui.preview.map(function (t) {
+      var meta = [];
+      if (t.priority !== 'med') meta.push(PRI_LABEL[t.priority]);
+      if (t.due) meta.push('due ' + fmtShortDate(t.due));
+      var skipped = !t.include;
+      var why = t.reason ? '<span class="pv-why">' + esc(t.reason) + '</span>' : '';
+      return '<li class="pv-row' + (skipped ? ' is-skip' : '') + '" data-key="' + esc(t.key) + '" style="--cat:' + catColor(t.category) + '">' +
+        '<label class="pv-cat"><span class="sr-only">Category</span><select data-pv="cat">' +
+        cats.map(function (c) { return '<option' + (c === t.category ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('') +
+        '<option value="__new">New category…</option></select></label>' +
+        '<input class="pv-title" data-pv="title" value="' + esc(t.title) + '" aria-label="Task name">' +
+        '<input class="pv-est' + (t.estGuess ? ' is-guess' : '') + '" data-pv="est" value="' + esc((t.estGuess ? '~' : '') + fmt(t.estMin)) + '" aria-label="Estimate" title="' + (t.estGuess ? (t.estSource === 'history' ? 'Based on how long similar tasks took you' : 'Tempo’s guess') : 'You said') + '">' +
+        (meta.length ? '<span class="pv-meta">' + esc(meta.join(' · ')) + '</span>' : '') +
+        (skipped ? why + '<button type="button" class="pv-btn" data-pv="keep">Add anyway</button>'
+                 : '<button type="button" class="pv-x" data-pv="drop" aria-label="Don’t add this">×</button>') +
+        '</li>';
+    }).join('');
+    updateAddButton();
+  }
+
+  function updateAddButton() {
+    var n = ui.preview.filter(function (t) { return t.include; }).length;
+    var total = ui.preview.filter(function (t) { return t.include; }).reduce(function (s, t) { return s + t.estMin; }, 0);
+    var btn = $('#dump-submit');
+    if (btn) btn.textContent = n > 1 ? 'Add ' + n : n === 1 ? 'Add' : 'Sort it';
+    var sum = $('#dump-sum');
+    if (sum) {
+      sum.hidden = n < 2;
+      var p = activePeriod();
+      var breaks = p && isSession(p) && p.breaks ? TP.breaksFor(total) : 0;
+      sum.textContent = n + ' tasks · ' + fmt(total) + (breaks ? ' + ' + fmt(breaks) + ' breaks' : '') + ' in all';
+    }
+  }
+
+  function editPreview(key, patch) {
+    ui.edits[key] = Object.assign(ui.edits[key] || {}, patch);
+  }
+
+  function addTasks(items) {
     var p = activePeriod();
     if (!p || !items.length) return [];
-    var order = periodTasks(p.id).reduce(function (mx, t) { return Math.max(mx, t.order); }, 0);
+    // In a session tied to a week, new tasks live on the week and are linked to the session.
+    var home = isSession(p) && p.parentId && periodById(p.parentId) ? p.parentId : p.id;
+    var order = state.tasks.reduce(function (mx, t) { return Math.max(mx, t.order); }, 0);
     var added = items.map(function (q) {
-      var t = {
-        id: uid(), periodId: p.id, title: q.title, estMin: q.estMin != null ? q.estMin : DEFAULT_EST,
-        priority: q.priority, due: q.due, category: q.category, notes: '', done: false, carried: false,
-        doneAt: null, order: ++order, logs: []
-      };
+      var t = normalizeTask({
+        id: uid(), periodId: home, title: q.title, estMin: q.estMin, estGuess: q.estGuess,
+        priority: q.priority, due: q.due, category: q.category, order: ++order
+      });
       state.tasks.push(t);
-      if (!q.catAuto) learn(t.title, t.category);
+      if (home !== p.id) p.linkIds.push(t.id);
+      if (!q.catAuto || q.catEdited) learn(t.title, t.category);
       return t;
     });
+    ui.flash = {};
+    added.forEach(function (t) { ui.flash[t.id] = true; });
+    ui.scrollToNew = true;
+    setTimeout(function () { ui.flash = {}; }, 2400);
     save(); render();
     return added;
   }
@@ -914,10 +894,12 @@
   function submitDump() {
     var input = $('#dump-input');
     if (!input) return;
-    var items = parseDump(input.value);
-    if (!items.length) { toast('Type a task or two first'); return; }
-    var added = addParsed(items);
+    buildPreview();
+    var items = ui.preview.filter(function (t) { return t.include && t.title.trim(); });
+    if (!items.length) { toast(ui.preview.length ? 'Nothing to add. Use “Add anyway” on a row to keep it.' : 'Type a task or two first'); return; }
+    var added = addTasks(items);
     input.value = '';
+    ui.edits = {};
     autoGrow(input);
     renderPreview();
     var cats = {};
@@ -930,23 +912,9 @@
       var ids = {};
       added.forEach(function (t) { ids[t.id] = true; });
       state.tasks = state.tasks.filter(function (t) { return !ids[t.id]; });
+      state.periods.forEach(function (x) { x.linkIds = x.linkIds.filter(function (id) { return !ids[id]; }); });
       save(); render();
     });
-  }
-
-  function renderPreview() {
-    var input = $('#dump-input'), box = $('#dump-preview');
-    if (!input || !box) return;
-    var items = input.value.trim() ? parseDump(input.value) : [];
-    box.innerHTML = items.slice(0, 12).map(function (t) {
-      var meta = [t.estMin != null ? fmt(t.estMin) : '30m?'];
-      if (t.priority !== 'med') meta.push(PRI_LABEL[t.priority]);
-      if (t.due) meta.push('due ' + fmtShortDate(t.due));
-      return '<li><span class="cat-chip" style="--cat:' + catColor(t.category) + '">' + esc(t.category) + '</span>' +
-        '<b>' + esc(t.title) + '</b><span class="pv-meta">' + meta.join(' · ') + '</span></li>';
-    }).join('') + (items.length > 12 ? '<li>+ ' + (items.length - 12) + ' more</li>' : '');
-    var btn = $('#dump-submit');
-    if (btn) btn.textContent = items.length > 1 ? 'Add ' + items.length : items.length === 1 ? 'Add' : 'Sort it';
   }
 
   function autoGrow(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 260) + 'px'; }
@@ -965,13 +933,24 @@
     var idx = state.tasks.findIndex(function (t) { return t.id === id; });
     if (idx < 0) return;
     var removed = state.tasks[idx];
+    var linkedIn = state.periods.filter(function (x) { return x.linkIds.indexOf(id) >= 0; });
     if (isRunning(removed)) state.running = null;
     state.tasks.splice(idx, 1);
+    linkedIn.forEach(function (x) { x.linkIds = x.linkIds.filter(function (l) { return l !== id; }); });
     save(); render();
     toast('Deleted: ' + removed.title, 'Undo', function () {
+      delete state.deleted[id];
       state.tasks.splice(Math.min(idx, state.tasks.length), 0, removed);
+      linkedIn.forEach(function (x) { x.linkIds.push(id); });
       save(); render();
     });
+  }
+
+  function setEstimate(id, value) {
+    var t = taskById(id), v = parseDuration(value);
+    ui.estEditing = null;
+    if (t && v != null && v > 0) { t.estMin = v; t.estGuess = false; save(); }
+    render();
   }
 
   function openTaskDialog(id) {
@@ -980,15 +959,16 @@
     ui.editingTaskId = id;
     f.title.value = t.title;
     f.est.value = fmt(t.estMin);
+    f.est.dataset.orig = f.est.value;
     f.logged.value = fmt(loggedMin(t));
     f.logged.dataset.orig = f.logged.value;
     f.priority.value = t.priority;
     f.due.value = t.due || '';
     f.category.value = t.category;
     f.notes.value = t.notes || '';
+    setText('#task-est-hint', t.estGuess ? 'This is Tempo’s guess. Change it if you know better.' : '');
     var dl = $('#cat-list');
-    if (dl) dl.innerHTML = CATS.concat(usedCategories().filter(function (c) { return CATS.indexOf(c) < 0; }))
-      .map(function (c) { return '<option value="' + esc(c) + '">'; }).join('');
+    if (dl) dl.innerHTML = allCategories().map(function (c) { return '<option value="' + esc(c) + '">'; }).join('');
     dlg.showModal();
   }
 
@@ -997,7 +977,7 @@
     if (!t || !f) return;
     var est = parseDuration(f.est.value);
     t.title = f.title.value.trim() || t.title;
-    if (est != null) t.estMin = est;
+    if (est != null && f.est.value.trim() !== f.est.dataset.orig) { t.estMin = est; t.estGuess = false; }
     t.priority = f.priority.value;
     t.due = f.due.value;
     t.notes = f.notes.value.trim();
@@ -1010,6 +990,7 @@
         if (isRunning(t)) state.running = null;
         var end = Date.now();
         t.logs = lg > 0 ? [{ start: end - lg * 60000, end: end }] : [];
+        t.logsResetAt = lg > 0 ? end - lg * 60000 : end;
       }
     }
     save(); render();
@@ -1044,15 +1025,13 @@
     var p = activePeriod(), moved = taskById(dragId);
     var li = e.target.closest('.task[draggable]'), group = e.target.closest('.cat-group');
     if (p && moved && group) {
-      var ordered = openTasks(p.id).filter(function (t) { return t.id !== dragId; });
+      var ordered = openTasks(p).filter(function (t) { return t.id !== dragId; });
       var newCat = group.dataset.cat;
       if (li && li.dataset.id !== dragId) {
         var target = taskById(li.dataset.id);
         ordered.splice(ordered.indexOf(target) + (li.classList.contains('drop-above') ? 0 : 1), 0, moved);
         if (moved.priority !== target.priority) moved.priority = target.priority;
-      } else {
-        ordered.push(moved);
-      }
+      } else ordered.push(moved);
       ordered.forEach(function (t, i) { t.order = i + 1; });
       if (newCat && newCat !== moved.category) {
         moved.category = newCat;
@@ -1070,18 +1049,27 @@
     $$('.is-dragging').forEach(function (el) { el.classList.remove('is-dragging'); });
   }
 
-  // ---------- Periods ----------
+  // ---------- Weeks ----------
+  function currentWeek() {
+    var p = activePeriod();
+    if (p && !isSession(p) && !p.closed) return p;
+    if (p && isSession(p) && p.parentId) { var w = periodById(p.parentId); if (w && !w.closed) return w; }
+    var weeks = state.periods.filter(function (x) { return !isSession(x) && !x.closed; });
+    return weeks.length ? weeks[weeks.length - 1] : null;
+  }
+
   function openPeriodDialog(mode) {
     var dlg = $('#period-dialog'), f = $('#period-form');
     if (!dlg || !f) return;
     var p = mode === 'edit' ? activePeriod() : null;
+    if (p && isSession(p)) { openSessionDialog(p); return; }
     ui.editingPeriodId = p ? p.id : null;
-    setText('#period-dialog-title', p ? 'Edit period' : 'New period');
+    setText('#period-dialog-title', p ? 'Edit week' : 'Plan a week');
     if (p) {
       f.name.value = p.name; f.start.value = p.start; f.end.value = p.end; f.budget.value = fmt(p.budgetMin);
     } else {
       var t = today();
-      f.name.value = state.periods.length ? '' : 'This week';
+      f.name.value = state.periods.some(function (x) { return !isSession(x); }) ? '' : 'This week';
       f.start.value = iso(t);
       f.end.value = iso(addDays(t, 6));
       f.budget.value = '20h';
@@ -1092,18 +1080,18 @@
   function readPeriodForm(f) {
     var budget = parseDuration(f.budget.value);
     if (budget == null || budget <= 0) { toast('Enter the budget as hours, e.g. 20h or 12.5'); return null; }
-    if (f.end.value < f.start.value) { toast('The period has to end on or after its start'); return null; }
-    return { name: f.name.value.trim() || 'Untitled period', start: f.start.value, end: f.end.value, budgetMin: budget };
+    if (f.end.value < f.start.value) { toast('The week has to end on or after its start'); return null; }
+    return { name: f.name.value.trim() || 'Untitled week', start: f.start.value, end: f.end.value, budgetMin: budget };
   }
 
   function savePeriodDialog() {
     var f = $('#period-form');
     var data = f && readPeriodForm(f);
     if (!data) return false;
-    var p = ui.editingPeriodId && state.periods.find(function (x) { return x.id === ui.editingPeriodId; });
+    var p = ui.editingPeriodId && periodById(ui.editingPeriodId);
     if (p) Object.assign(p, data);
     else {
-      p = Object.assign({ id: uid(), closed: false }, data);
+      p = normalizePeriod(Object.assign({ id: uid(), kind: 'week', closed: false }, data));
       state.periods.push(p);
       state.activePeriodId = p.id;
     }
@@ -1113,8 +1101,11 @@
   }
 
   function openCloseDialog() {
-    var p = activePeriod(), dlg = $('#close-dialog'), f = $('#close-form');
-    if (!p || !dlg || !f) return;
+    var p = activePeriod();
+    if (!p) return;
+    if (isSession(p)) { openEndSessionDialog(p); return; }
+    var dlg = $('#close-dialog'), f = $('#close-form');
+    if (!dlg || !f) return;
     stopTimer();
     var m = metrics(p);
     var estDone = 0, actDone = 0;
@@ -1127,15 +1118,7 @@
       '<div><dt>Time logged</dt><dd>' + fmt(logged) + ' / ' + fmt(m.budget) + '</dd></div>' +
       '<div><dt>Still open</dt><dd>' + m.open + ' · ' + fmt(m.remaining) + '</dd></div>' +
       '<div><dt>Estimated → actual</dt><dd>' + (actDone >= 1 ? fmt(estDone) + ' → ' + fmt(actDone) : '–') + '</dd></div>';
-    var note = '';
-    if (actDone >= 1 && estDone > 0) {
-      var d = Math.round((actDone / estDone - 1) * 100);
-      note = Math.abs(d) <= 10 ? 'Your estimates were within 10% this period.' :
-        d > 0 ? 'Finished tasks took ' + d + '% longer than estimated. Pad next period’s estimates, or plan fewer tasks.' :
-        'Finished tasks took ' + Math.abs(d) + '% less time than estimated.';
-    }
-    setText('#recap-note', note);
-    // Suggest the next period: same length, starting the day after this one ends.
+    setText('#recap-note', accuracyNote(estDone, actDone, 'next week’s'));
     var len = daysBetween(parseISO(p.start), parseISO(p.end));
     var ns = addDays(parseISO(p.end), 1);
     f.name.value = /week/i.test(p.name) ? 'Week of ' + ns.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
@@ -1149,22 +1132,29 @@
     dlg.showModal();
   }
 
+  function accuracyNote(est, act, whose) {
+    if (!(act >= 1 && est > 0)) return '';
+    var d = Math.round((act / est - 1) * 100);
+    return Math.abs(d) <= 10 ? 'Your estimates were within 10%.' :
+      d > 0 ? 'Finished tasks took ' + d + '% longer than estimated. Tempo will pad ' + whose + ' guesses to match.' :
+      'Finished tasks took ' + Math.abs(d) + '% less time than estimated.';
+  }
+
   function saveCloseDialog() {
     var p = activePeriod(), f = $('#close-form');
     var data = p && f && readPeriodForm(f);
     if (!data) return false;
-    var np = Object.assign({ id: uid(), closed: false }, data);
+    var np = normalizePeriod(Object.assign({ id: uid(), kind: 'week', closed: false }, data));
     p.closed = true;
     state.periods.push(np);
     if (f.carry.checked) {
       var i = 0;
-      openTasks(p.id).forEach(function (t) {
+      openTasks(p).forEach(function (t) {
         t.carried = true;
-        state.tasks.push({
+        state.tasks.push(normalizeTask({
           id: uid(), periodId: np.id, title: t.title, estMin: Math.max(Math.round(remainingMin(t)), 15),
-          priority: t.priority, due: t.due, category: t.category, notes: t.notes, done: false, carried: false,
-          doneAt: null, order: ++i, logs: []
-        });
+          priority: t.priority, due: t.due, category: t.category, notes: t.notes, order: ++i
+        }));
       });
     }
     state.activePeriodId = np.id;
@@ -1173,10 +1163,146 @@
     return true;
   }
 
+  // ---------- Study sessions ----------
+  function openSessionDialog(editing) {
+    var dlg = $('#session-dialog'), f = $('#session-form');
+    if (!dlg || !f) return;
+    ui.editingPeriodId = editing ? editing.id : null;
+    setText('#session-dialog-title', editing ? 'Edit session' : 'Start a study session');
+    f.name.value = editing ? editing.name : 'Study session';
+    f.length.value = editing && editing.budgetMin != null ? fmt(editing.budgetMin) : '';
+    f.breaks.checked = editing ? editing.breaks : true;
+    var week = editing ? null : currentWeek();
+    var pickBox = $('#session-pick'), srcBox = $('#session-source');
+    if (srcBox) srcBox.hidden = !week;
+    if (week) {
+      setText('#session-week-name', week.name);
+      f.source.value = 'week';
+      var soon = iso(addDays(today(), 2)), budget = 0;
+      // Pre-tick what matters most: high priority or due within two days, up to about 4 hours.
+      var list = openTasks(week);
+      pickBox.innerHTML = list.length ? list.map(function (t) {
+        var pick = (t.priority === 'high' || (t.due && t.due <= soon)) && budget + remainingMin(t) <= 240;
+        if (pick) budget += remainingMin(t);
+        return '<label class="pick"><input type="checkbox" name="pick" value="' + esc(t.id) + '"' + (pick ? ' checked' : '') + '>' +
+          '<span class="pick-title">' + esc(t.title) + '</span><span class="pick-meta">' + esc(t.category) + ' · ' + fmt(remainingMin(t)) + (t.due ? ' · due ' + esc(fmtShortDate(t.due)) : '') + '</span></label>';
+      }).join('') : '<p class="hint">No open tasks in ' + esc(week.name) + '.</p>';
+    } else if (pickBox) pickBox.innerHTML = '';
+    ui.sessionWeek = week ? week.id : null;
+    updateSessionSummary();
+    dlg.showModal();
+  }
+
+  function sessionPicks() {
+    var f = $('#session-form');
+    if (!f || !ui.sessionWeek || f.source.value !== 'week') return [];
+    return $$('input[name="pick"]:checked', f).map(function (i) { return taskById(i.value); }).filter(Boolean);
+  }
+
+  function updateSessionSummary() {
+    var f = $('#session-form');
+    if (!f) return;
+    var weekMode = ui.sessionWeek && f.source.value === 'week';
+    var pickBox = $('#session-pick');
+    if (pickBox) pickBox.hidden = !weekMode;
+    var picks = sessionPicks();
+    var work = picks.reduce(function (s, t) { return s + remainingMin(t); }, 0);
+    var breaks = f.breaks.checked ? TP.breaksFor(work) : 0;
+    var len = parseDuration(f.length.value);
+    var out;
+    if (ui.editingPeriodId) out = '';
+    else if (!picks.length) out = len ? 'A ' + fmt(len) + ' session. Add tasks after you start and Tempo shows if they fit.' : 'Add tasks after you start. Tempo estimates how long the session will take.';
+    else {
+      out = picks.length + (picks.length === 1 ? ' task' : ' tasks') + ' · ' + fmt(work) + ' work' + (breaks ? ' + ' + fmt(breaks) + ' breaks' : '') +
+        ' ≈ done by ' + fmtTime(Date.now() + (work + breaks) * 60000);
+      if (len && work + breaks > len) out += ' · that’s ' + fmt(work + breaks - len) + ' more than you have';
+    }
+    setText('#session-sum', out);
+  }
+
+  function saveSessionDialog() {
+    var f = $('#session-form');
+    if (!f) return false;
+    var lenText = f.length.value.trim(), len = lenText ? parseDuration(lenText) : null;
+    if (lenText && (len == null || len <= 0)) { toast('Enter how long you have, e.g. 2h or 90m. Or leave it blank.'); return false; }
+    var editing = ui.editingPeriodId && periodById(ui.editingPeriodId);
+    if (editing) {
+      editing.name = f.name.value.trim() || 'Study session';
+      editing.budgetMin = len;
+      editing.breaks = f.breaks.checked;
+      save(); render();
+      return true;
+    }
+    stopTimer();
+    var picks = sessionPicks(), now = Date.now();
+    var s = normalizePeriod({
+      id: uid(), kind: 'session', name: f.name.value.trim() || 'Study session', start: iso(today()), end: iso(today()),
+      budgetMin: len, breaks: f.breaks.checked, startedAt: now, closed: false,
+      parentId: ui.sessionWeek && f.source.value === 'week' ? ui.sessionWeek : null,
+      linkIds: picks.map(function (t) { return t.id; })
+    });
+    state.periods.push(s);
+    state.activePeriodId = s.id;
+    save(); render();
+    toast(picks.length ? 'Session started with ' + picks.length + (picks.length === 1 ? ' task' : ' tasks') : 'Session started. Tell Tempo what you’ll work on.');
+    setTimeout(function () { var i = $('#dump-input'); if (i && !picks.length) i.focus(); }, 50);
+    return true;
+  }
+
+  function openEndSessionDialog(p) {
+    var dlg = $('#end-dialog');
+    if (!dlg) return;
+    stopTimer(); save();
+    var m = metrics(p), since = p.startedAt || 0;
+    var estDone = 0, actDone = 0;
+    m.tasks.forEach(function (t) { if (t.done && (t.doneAt || 0) >= since) { estDone += t.estMin; actDone += loggedMin(t); } });
+    setText('#end-name', p.name);
+    var recap = $('#end-recap');
+    if (recap) recap.innerHTML =
+      '<div><dt>Worked</dt><dd>' + fmt(m.used) + '</dd></div>' +
+      '<div><dt>Session length</dt><dd>' + fmt((Date.now() - since) / 60000) + '</dd></div>' +
+      '<div><dt>Finished</dt><dd>' + m.done + ' / ' + (m.done + m.open) + '</dd></div>' +
+      '<div><dt>Estimated → actual</dt><dd>' + (actDone >= 1 ? fmt(estDone) + ' → ' + fmt(actDone) : '–') + '</dd></div>';
+    setText('#end-note', accuracyNote(estDone, actDone, 'your next'));
+    var parent = periodById(p.parentId);
+    var own = openTasks(p).filter(function (t) { return t.periodId === p.id; });
+    var carry = $('#end-carry'), carryLabel = $('#end-carry-label');
+    if (carry) {
+      carry.closest('label').hidden = !own.length;
+      carry.checked = !!own.length;
+      if (carryLabel) carryLabel.textContent = parent
+        ? 'Move ' + own.length + ' unfinished task' + (own.length === 1 ? '' : 's') + ' to ' + parent.name
+        : 'Start another session later with ' + own.length + ' unfinished task' + (own.length === 1 ? '' : 's');
+    }
+    setText('#end-linked', parent && m.open - own.length > 0 ? (m.open - own.length) + ' unfinished task' + (m.open - own.length === 1 ? ' stays' : 's stay') + ' on ' + parent.name + '.' : '');
+    dlg.showModal();
+  }
+
+  function endSession() {
+    var p = activePeriod();
+    if (!p || !isSession(p)) return;
+    var parent = periodById(p.parentId);
+    var carry = $('#end-carry');
+    var own = openTasks(p).filter(function (t) { return t.periodId === p.id; });
+    p.closed = true;
+    p.endedAt = Date.now();
+    if (carry && carry.checked && own.length) {
+      if (parent) own.forEach(function (t) { t.periodId = parent.id; });
+      else {
+        // Standalone: park them in a fresh session that starts when you open it.
+        var next = normalizePeriod({ id: uid(), kind: 'session', name: 'Next session', start: iso(today()), end: iso(today()),
+          budgetMin: null, breaks: p.breaks, startedAt: Date.now(), closed: false });
+        state.periods.push(next);
+        own.forEach(function (t) { t.periodId = next.id; });
+      }
+    }
+    var back = parent && !parent.closed ? parent : currentWeek();
+    state.activePeriodId = back ? back.id : p.id;
+    save(); render();
+    toast('Session ended · ' + fmt(metrics(p).used) + ' worked');
+  }
+
   // ---------- Pop-out mini timer ----------
-  // Chrome/Edge: Document Picture-in-Picture gives a real always-on-top window with buttons.
-  // Elsewhere (Safari): draw the timer onto a canvas and float it as a video, controlled
-  // with the video's own play/pause.
   var mini = { win: null, video: null, canvas: null };
   var MINI_HTML =
     '<div class="mini" id="mini">' +
@@ -1195,7 +1321,6 @@
   function miniCanPop() {
     return !!(window.documentPictureInPicture || (document.pictureInPictureEnabled && HTMLCanvasElement.prototype.captureStream));
   }
-
   function togglePopout() {
     if (mini.win) { mini.win.close(); return; }
     if (mini.video && document.pictureInPictureElement) { document.exitPictureInPicture(); return; }
@@ -1203,33 +1328,26 @@
     else if (document.pictureInPictureEnabled && HTMLCanvasElement.prototype.captureStream) openVideoPip();
     else toast('This browser can’t pop out a floating timer. Try Chrome or Edge.');
   }
-
   function openDocPip() {
     window.documentPictureInPicture.requestWindow({ width: 380, height: 190 }).then(function (win) {
       setupMiniWindow(win);
       win.addEventListener('pagehide', function () { mini.win = null; mini.chrono = null; updatePopBtn(); });
     }).catch(function () { toast('Couldn’t open the floating timer'); });
   }
-
   function setupMiniWindow(win) {
     mini.win = win;
     var doc = win.document;
-    // Bring the page's fonts and styles into the little window.
     $$('link[rel="stylesheet"], style').forEach(function (el) { doc.head.appendChild(el.cloneNode(true)); });
     doc.title = 'Tempo';
     doc.body.className = 'mini-body';
     doc.body.innerHTML = MINI_HTML;
     mini.chrono = buildChrono(doc.getElementById('mini-chrono'));
     syncMiniTheme();
-    doc.addEventListener('click', function (e) {
-      var b = e.target.closest('[data-mini]');
-      if (b) miniAction(b.dataset.mini);
-    });
+    doc.addEventListener('click', function (e) { var b = e.target.closest('[data-mini]'); if (b) miniAction(b.dataset.mini); });
     doc.addEventListener('keydown', function (e) { if (e.key === ' ') { e.preventDefault(); miniAction('toggle'); } });
     updatePopBtn();
     render();
   }
-
   function openVideoPip() {
     if (!mini.canvas) {
       mini.canvas = document.createElement('canvas');
@@ -1240,13 +1358,12 @@
       document.body.appendChild(mini.video);
       mini.video.srcObject = mini.canvas.captureStream(4);
       mini.video.addEventListener('leavepictureinpicture', function () { updatePopBtn(); });
-      // The floating video's play/pause button starts and stops the task timer.
       var viaSession = false;
       try {
         navigator.mediaSession.setActionHandler('play', function () { miniAction('toggle'); });
         navigator.mediaSession.setActionHandler('pause', function () { miniAction('toggle'); });
         viaSession = true;
-      } catch (e) { /* not supported: fall back to the video's own pause event */ }
+      } catch (e) { /* fall back to the video's own pause event */ }
       if (!viaSession) mini.video.addEventListener('pause', function () {
         if (document.pictureInPictureElement === mini.video) { miniAction('toggle'); mini.video.play(); }
       });
@@ -1256,20 +1373,17 @@
       .then(function () { updatePopBtn(); })
       .catch(function () { toast('Couldn’t open the floating timer'); });
   }
-
   function miniAction(action) {
     var p = activePeriod(), cur = p && currentTask(p);
     if (!cur) { toast('No open tasks'); return; }
     if (action === 'toggle') toggleTimer(cur.task.id);
     else if (action === 'done') setDone(cur.task.id, true);
   }
-
   function syncMiniTheme() {
     if (!mini.win) return;
     var root = mini.win.document.documentElement, t = document.documentElement.getAttribute('data-theme');
     if (t) root.setAttribute('data-theme', t); else root.removeAttribute('data-theme');
   }
-
   function updatePopBtn() {
     var btn = $('#pop-btn');
     if (!btn) return;
@@ -1278,7 +1392,6 @@
     btn.setAttribute('aria-label', open ? 'Close floating timer' : 'Pop out floating timer');
     btn.title = (open ? 'Close floating timer' : 'Pop out timer') + ' (p)';
   }
-
   function renderMini(p, m, cs, cur) {
     if (mini.win && mini.chrono) {
       var doc = mini.win.document;
@@ -1287,49 +1400,48 @@
       doc.getElementById('mini').classList.toggle('is-running', !!(cur && cur.running));
       q('state').textContent = cur ? (cur.running ? 'Working on' : 'Up next') : 'All clear';
       q('title').textContent = cur ? cur.task.title : 'Nothing left to do';
-      q('meta').textContent = cur ? fmt(loggedMin(cur.task)) + ' of ' + fmt(cur.task.estMin) + ' · ' + cur.task.category : '';
+      q('meta').textContent = cur ? fmt(loggedMin(cur.task)) + ' of ' + fmtEst(cur.task) + ' · ' + cur.task.category : '';
       var tb = doc.querySelector('[data-mini="toggle"]'), db = doc.querySelector('[data-mini="done"]');
       tb.textContent = cur && cur.running ? 'Pause' : 'Start';
       tb.disabled = db.disabled = !cur;
     }
     if (mini.canvas) drawMiniCanvas(cs, cur);
   }
-
   // Safari fallback: the same chronograph, painted onto a canvas that floats as a video.
   function drawMiniCanvas(cs, cur) {
     var c = mini.canvas, x = c.getContext('2d'), st = getComputedStyle(document.documentElement);
     var tok = function (n) { return st.getPropertyValue(n).trim(); };
-    var CH = { face: tok('--ch-face'), bezel: tok('--ch-bezel'), ink: tok('--ch-ink'), dim: tok('--ch-dim') };
+    var C = { face: tok('--ch-face'), bezel: tok('--ch-bezel'), ink: tok('--ch-ink'), dim: tok('--ch-dim') };
     var W = c.width, H = c.height, cx = 150, cy = H / 2, R = 128;
     var line = function (r1, r2, turn, w) {
       var a = turn * 2 * Math.PI;
-      x.beginPath(); x.lineWidth = w; x.strokeStyle = CH.ink;
+      x.beginPath(); x.lineWidth = w; x.strokeStyle = C.ink;
       x.moveTo(cx + r1 * Math.sin(a), cy - r1 * Math.cos(a)); x.lineTo(cx + r2 * Math.sin(a), cy - r2 * Math.cos(a)); x.stroke();
     };
-    x.fillStyle = CH.face; x.fillRect(0, 0, W, H);
-    x.beginPath(); x.arc(cx, cy, R + 8, 0, 2 * Math.PI); x.fillStyle = CH.bezel; x.fill();
-    x.beginPath(); x.arc(cx, cy, R, 0, 2 * Math.PI); x.fillStyle = CH.face; x.fill();
+    x.fillStyle = C.face; x.fillRect(0, 0, W, H);
+    x.beginPath(); x.arc(cx, cy, R + 8, 0, 2 * Math.PI); x.fillStyle = C.bezel; x.fill();
+    x.beginPath(); x.arc(cx, cy, R, 0, 2 * Math.PI); x.fillStyle = C.face; x.fill();
     for (var i = 0; i < 60; i++) line(i % 5 ? R - 7 : R - 14, R - 2, i / 60, i % 5 ? 1 : 3);
     var L = Math.max(cs.left, 0), whole = Math.floor(L);
     line(-14, R * .55, Math.min(L / Math.max(cs.budget, 1), 1), 9);
     line(-16, R * .86, (L % 3600) / 3600, 5);
     line(-26, R * .95, (whole % 60) / 60, 1.6);
-    x.beginPath(); x.arc(cx, cy, 6, 0, 2 * Math.PI); x.fillStyle = CH.ink; x.fill();
-    x.fillStyle = CH.ink; x.textAlign = 'left'; x.textBaseline = 'middle';
+    x.beginPath(); x.arc(cx, cy, 6, 0, 2 * Math.PI); x.fillStyle = C.ink; x.fill();
+    x.fillStyle = C.ink; x.textAlign = 'left'; x.textBaseline = 'middle';
     x.font = '400 46px "Geist Mono", monospace';
     var ov = Math.ceil(-cs.left);
     x.fillText(cs.left < 0 ? '+' + Math.floor(ov / 3600) + ':' + pad(Math.floor(ov / 60) % 60) : Math.floor(whole / 3600) + ':' + pad(Math.floor(whole / 60) % 60) + ':' + pad(whole % 60), 310, 78);
-    x.fillStyle = CH.dim; x.font = '500 15px "Geist Mono", monospace';
-    x.fillText(cs.left < 0 ? 'OVER BUDGET' : 'LEFT TO WORK', 312, 114);
+    x.fillStyle = C.dim; x.font = '500 15px "Geist Mono", monospace';
+    x.fillText(cs.left < 0 ? 'OVER BUDGET' : (cs.label || 'LEFT TO WORK'), 312, 114);
     x.fillText(cur ? (cur.running ? 'WORKING ON' : 'UP NEXT') : 'ALL CLEAR', 312, 162);
-    x.fillStyle = CH.ink; x.font = '500 27px Geist, system-ui, sans-serif';
+    x.fillStyle = C.ink; x.font = '500 27px Geist, system-ui, sans-serif';
     var title = cur ? cur.task.title : 'Nothing left to do';
     while (title.length > 3 && x.measureText(title).width > 310) title = title.slice(0, -2);
     if (cur && title !== cur.task.title) title = title.trim() + '…';
     x.fillText(title, 312, 196);
     if (cur && cs.task) {
       var frac = cs.task.est > 0 ? cs.task.spent / cs.task.est : 0;
-      x.fillStyle = CH.dim; x.font = '400 18px Geist, system-ui, sans-serif';
+      x.fillStyle = C.dim; x.font = '400 18px Geist, system-ui, sans-serif';
       x.fillText(fmt(cs.task.spent / 60) + ' of ' + fmt(cs.task.est / 60) + ' · ' + (frac > 1 ? 'over' : Math.round(frac * 100) + '% done'), 312, 232);
     }
   }
@@ -1337,12 +1449,7 @@
   // ---------- Focus mode ----------
   function openFocus(id) {
     var t = id ? taskById(id) : null;
-    if (!t) {
-      var p = activePeriod();
-      if (!p) return;
-      var running = state.running && taskById(state.running.taskId);
-      t = running && running.periodId === p.id ? running : openTasks(p.id)[0];
-    }
+    if (!t) { var p = activePeriod(); if (!p) return; var cur = currentTask(p); t = cur && cur.task; }
     if (!t) { toast('No open tasks to focus on'); return; }
     ui.focusId = t.id;
     var box = $('#focus');
@@ -1369,7 +1476,7 @@
     var ms = loggedMs(t), min = ms / 60000;
     setText('#focus-title', t.title);
     setText('#focus-clock', fmtClock(ms));
-    setText('#focus-of', t.estMin ? (min > t.estMin ? fmt(min - t.estMin) + ' over the ' + fmt(t.estMin) + ' estimate' : 'of ' + fmt(t.estMin) + ' estimated') : 'no estimate');
+    setText('#focus-of', t.estMin ? (min > t.estMin ? fmt(min - t.estMin) + ' over the ' + fmtEst(t) + ' estimate' : 'of ' + fmtEst(t) + ' estimated') : 'no estimate');
     var ring = $('#ring-fg');
     if (ring) {
       var frac = t.estMin ? Math.min(min / t.estMin, 1) : 0;
@@ -1378,7 +1485,6 @@
     }
     var btn = $('#focus-toggle');
     if (btn) btn.textContent = running ? 'Pause' : (ui.pomo && ui.pomo.phase === 'break' ? 'Skip break' : (ms > 0 ? 'Resume' : 'Start'));
-
     var line = $('#pomo-line');
     if (ui.pomo && state.settings.pomodoro) {
       var left = ui.pomo.endsAt - Date.now();
@@ -1395,10 +1501,7 @@
         renderFocus();
         return;
       }
-      if (line) {
-        line.hidden = false;
-        line.textContent = (ui.pomo.phase === 'work' ? 'Focus round · ' : 'Break · ') + fmtClock(left).replace(/^0:/, '') + ' left';
-      }
+      if (line) { line.hidden = false; line.textContent = (ui.pomo.phase === 'work' ? 'Focus round · ' : 'Break · ') + fmtClock(left).replace(/^0:/, '') + ' left'; }
     } else if (line) {
       line.hidden = !state.settings.pomodoro;
       line.textContent = 'Pomodoro on · press Start for a 25-minute round';
@@ -1433,7 +1536,7 @@
   }
   function notify(title, body) {
     toast(title + '. ' + body);
-    try { if (window.Notification && Notification.permission === 'granted') new Notification(title, { body: body }); } catch (e) { /* ignore */ }
+    try { if (window.Notification && Notification.permission === 'granted' && document.hidden) new Notification(title, { body: body }); } catch (e) { /* ignore */ }
   }
 
   // ---------- Dictation ----------
@@ -1469,6 +1572,103 @@
     });
   }
 
+  // ---------- Accounts & sync ----------
+  function syncDoc() {
+    return { periods: state.periods, tasks: state.tasks, running: state.running, runningAt: state.runningAt, learn: state.learn, deleted: state.deleted };
+  }
+  function applySyncedDoc(doc, info) {
+    var keep = { activePeriodId: state.activePeriodId, settings: state.settings };
+    var hadLocal = state.tasks.length;
+    state = normalize(Object.assign({}, doc, keep));
+    if (!periodById(state.activePeriodId)) {
+      var o = latestOpen(state.periods);
+      state.activePeriodId = o ? o.id : (state.periods.length ? state.periods[state.periods.length - 1].id : null);
+    }
+    resetSnap();
+    save({ quiet: true });
+    render();
+    if (info && info.first && hadLocal) toast('Signed in. Your tasks on this device are now saved to your account.');
+  }
+  var SYNC_LABEL = { saving: 'Saving…', synced: 'Saved to your account', offline: 'Offline · will save when you’re back', error: 'Couldn’t save · will retry', 'signed-out': '', unavailable: '' };
+  function onSyncStatus(status, user) {
+    var btn = $('#account-btn'), dot = $('#sync-dot'), label = $('#account-label');
+    if (btn) btn.classList.toggle('is-signed-in', !!user);
+    if (label) label.textContent = user ? (user.email || 'Account').charAt(0).toUpperCase() : 'Sign in';
+    if (btn) btn.setAttribute('aria-label', user ? 'Account: ' + user.email + '. ' + (SYNC_LABEL[status] || '') : 'Sign in to sync your tasks');
+    if (dot) { dot.className = 'sync-dot is-' + status; dot.hidden = !user; }
+    setText('#acct-email', user ? user.email : '');
+    setText('#acct-status', SYNC_LABEL[status] || '');
+    if (status === 'error' || status === 'offline') { clearTimeout(ui.retry); ui.retry = setTimeout(function () { if (TempoSync.user) TempoSync.pull(); }, 30000); }
+  }
+
+  function openAuth(mode) {
+    var dlg = $('#auth-dialog');
+    if (!dlg) return;
+    if (!window.TempoSync || !TempoSync.ready) { toast('Accounts need an internet connection. Try again once you’re online.'); return; }
+    setAuthMode(mode || 'signin');
+    setText('#auth-msg', '');
+    dlg.showModal();
+  }
+  function setAuthMode(mode) {
+    ui.authMode = mode;
+    var f = $('#auth-form');
+    setText('#auth-title', mode === 'signup' ? 'Create your account' : mode === 'reset' ? 'Reset your password' : mode === 'newpass' ? 'Choose a new password' : 'Sign in');
+    setText('#auth-lede', mode === 'signup' ? 'Your tasks will be saved to your account, so they show up on your phone and computer.' :
+      mode === 'reset' ? 'We’ll email you a link to choose a new password.' : mode === 'newpass' ? 'Enter a new password for your account.' :
+      'Sign in to see your tasks on every device.');
+    if (f) {
+      f.email.closest('.field').hidden = mode === 'newpass';
+      f.password.closest('.field').hidden = mode === 'reset';
+      f.password.autocomplete = mode === 'signin' ? 'current-password' : 'new-password';
+      f.email.required = mode !== 'newpass';
+      f.password.required = mode !== 'reset';
+    }
+    setText('#auth-submit', mode === 'signup' ? 'Create account' : mode === 'reset' ? 'Send reset link' : mode === 'newpass' ? 'Save password' : 'Sign in');
+    var sw = $('#auth-switch');
+    if (sw) sw.innerHTML = mode === 'signup' ? 'Already have an account? <button type="button" data-auth="signin">Sign in</button>' :
+      mode === 'signin' ? 'New here? <button type="button" data-auth="signup">Create an account</button> · <button type="button" data-auth="reset">Forgot password?</button>' :
+      mode === 'reset' ? '<button type="button" data-auth="signin">Back to sign in</button>' : '';
+  }
+  function submitAuth() {
+    var f = $('#auth-form'), msg = $('#auth-msg'), btn = $('#auth-submit');
+    if (!f) return;
+    var email = f.email.value.trim(), pw = f.password.value, mode = ui.authMode;
+    if ((mode === 'signup' || mode === 'newpass') && pw.length < 8) { msg.textContent = 'Use at least 8 characters for your password.'; return; }
+    btn.disabled = true;
+    msg.textContent = '';
+    var job = mode === 'signup' ? TempoSync.signUp(email, pw) : mode === 'reset' ? TempoSync.resetPassword(email) :
+      mode === 'newpass' ? TempoSync.updatePassword(pw) : TempoSync.signIn(email, pw);
+    job.then(function (res) {
+      btn.disabled = false;
+      if (res.error) { msg.textContent = friendlyAuthError(res.error); return; }
+      if (mode === 'signup' && !(res.data && res.data.session)) { msg.textContent = 'Check your email to confirm your account, then sign in here.'; setAuthMode('signin'); f.password.value = ''; return; }
+      if (mode === 'reset') { msg.textContent = 'If that email has an account, a reset link is on its way.'; return; }
+      $('#auth-dialog').close();
+      f.password.value = '';
+      toast(mode === 'newpass' ? 'Password updated' : 'Signed in');
+    }).catch(function () { btn.disabled = false; msg.textContent = 'Couldn’t reach the server. Check your connection and try again.'; });
+  }
+  function friendlyAuthError(err) {
+    var m = String(err && err.message || '');
+    if (/invalid login/i.test(m)) return 'That email and password don’t match. Try again or reset your password.';
+    if (/already registered|already exists/i.test(m)) return 'There’s already an account with that email. Sign in instead.';
+    if (/email not confirmed/i.test(m)) return 'Confirm your email first. The link is in your inbox.';
+    if (/rate limit/i.test(m)) return 'Too many tries. Wait a minute and try again.';
+    return m || 'Something went wrong. Try again.';
+  }
+  function signOut() {
+    if (!confirm('Sign out? Your tasks stay in your account. This device will be cleared.')) return;
+    TempoSync.signOut().then(function () {
+      var theme = state.settings;
+      state = blank();
+      state.settings = theme;
+      resetSnap();
+      save({ quiet: true });
+      render();
+      toast('Signed out');
+    });
+  }
+
   // ---------- Backup ----------
   function exportJSON() {
     stopTimer(); save(); render();
@@ -1488,7 +1688,10 @@
         if (!data || !Array.isArray(data.periods) || !Array.isArray(data.tasks)) throw new Error('shape');
         var next = normalize(data);
         if (!confirm('Replace everything here with this backup (' + next.periods.length + ' periods, ' + next.tasks.length + ' tasks)?')) return;
+        var old = state;
         state = next;
+        // Mark the replaced items as deleted so the account copy drops them too.
+        old.tasks.concat(old.periods).forEach(function (o) { if (!next.tasks.concat(next.periods).some(function (n) { return n.id === o.id; })) state.deleted[o.id] = Date.now(); });
         save(); render();
         toast('Backup restored');
       } catch (e) { toast('That file isn’t a Tempo backup'); }
@@ -1501,29 +1704,31 @@
     var t = today(), now = Date.now();
     var pid = uid(), prev = uid();
     var log = function (min, daysAgo) { var end = now - daysAgo * DAY; return [{ start: end - min * 60000, end: end }]; };
-    var mk = function (o, i) { return Object.assign({ id: uid(), notes: '', due: '', done: false, carried: false, doneAt: null, order: i + 1, logs: [] }, o); };
-    var learnKeep = state.learn;
+    var mk = function (o, i) { return normalizeTask(Object.assign({ id: uid(), order: i + 1 }, o)); };
+    var keep = { learn: state.learn, settings: state.settings, deleted: state.deleted };
+    var oldIds = state.tasks.concat(state.periods).map(function (o) { return o.id; });
     state = blank();
-    state.learn = learnKeep || {};
+    state.learn = keep.learn || {}; state.settings = keep.settings; state.deleted = keep.deleted || {};
+    oldIds.forEach(function (id) { state.deleted[id] = now; });
     state.periods = [
-      { id: prev, name: 'Last week', start: iso(addDays(t, -9)), end: iso(addDays(t, -3)), budgetMin: 18 * 60, closed: true },
-      { id: pid, name: 'This week', start: iso(addDays(t, -2)), end: iso(addDays(t, 4)), budgetMin: 20 * 60, closed: false }
+      normalizePeriod({ id: prev, kind: 'week', name: 'Last week', start: iso(addDays(t, -9)), end: iso(addDays(t, -3)), budgetMin: 18 * 60, closed: true }),
+      normalizePeriod({ id: pid, kind: 'week', name: 'This week', start: iso(addDays(t, -2)), end: iso(addDays(t, 4)), budgetMin: 20 * 60, closed: false })
     ];
     state.tasks = [
-      mk({ periodId: prev, title: 'Lab report: projectile motion', estMin: 120, priority: 'high', category: 'School', done: true, doneAt: now - 6 * DAY, logs: log(165, 6) }, 0),
+      mk({ periodId: prev, title: 'Physics lab report', estMin: 120, priority: 'high', category: 'School', done: true, doneAt: now - 6 * DAY, logs: log(165, 6) }, 0),
       mk({ periodId: prev, title: 'Update portfolio case study', estMin: 90, priority: 'med', category: 'Work', done: true, doneAt: now - 5 * DAY, logs: log(110, 5) }, 1),
       mk({ periodId: prev, title: 'Client call prep', estMin: 30, priority: 'med', category: 'Work', done: true, doneAt: now - 4 * DAY, logs: log(35, 4) }, 2),
       mk({ periodId: pid, title: 'Finish launch checklist for client site', estMin: 180, priority: 'high', category: 'Work', due: iso(addDays(t, 1)), logs: log(70, 1) }, 0),
       mk({ periodId: pid, title: 'AP Physics problem set 6', estMin: 120, priority: 'high', category: 'School', due: iso(addDays(t, 2)) }, 1),
       mk({ periodId: pid, title: 'Study for calc quiz', estMin: 150, priority: 'high', category: 'School', due: iso(addDays(t, 3)), notes: 'Chapters 4.1–4.4, related rates.' }, 2),
       mk({ periodId: pid, title: 'Reply to client emails', estMin: 30, priority: 'med', category: 'Work', done: true, doneAt: now - DAY, logs: log(25, 1) }, 3),
-      mk({ periodId: pid, title: 'Write essay draft', estMin: 240, priority: 'med', category: 'School', due: iso(addDays(t, 4)) }, 4),
+      mk({ periodId: pid, title: 'English essay draft', estMin: 240, priority: 'med', category: 'School', due: iso(addDays(t, 4)) }, 4),
       mk({ periodId: pid, title: 'Redesign pricing page', estMin: 300, priority: 'med', category: 'Work' }, 5),
-      mk({ periodId: pid, title: 'Gym', estMin: 60, priority: 'med', category: 'Health' }, 6),
-      mk({ periodId: pid, title: 'Buy groceries', estMin: 45, priority: 'med', category: 'Errands' }, 7),
+      mk({ periodId: pid, title: 'Gym', estMin: 60, estGuess: true, priority: 'med', category: 'Health' }, 6),
+      mk({ periodId: pid, title: 'Buy groceries', estMin: 45, estGuess: true, priority: 'med', category: 'Errands' }, 7),
       mk({ periodId: pid, title: 'Edit video reel', estMin: 180, priority: 'low', category: 'Work' }, 8),
-      mk({ periodId: pid, title: 'Do laundry', estMin: 30, priority: 'low', category: 'Home' }, 9),
-      mk({ periodId: pid, title: 'Call grandma', estMin: 30, priority: 'low', category: 'Personal' }, 10)
+      mk({ periodId: pid, title: 'Do laundry', estMin: 30, estGuess: true, priority: 'low', category: 'Home' }, 9),
+      mk({ periodId: pid, title: 'Call grandma', estMin: 20, estGuess: true, priority: 'low', category: 'Personal' }, 10)
     ];
     state.activePeriodId = pid;
     ui.search = ''; ui.filter = 'open';
@@ -1533,21 +1738,34 @@
   }
 
   // ---------- Events ----------
-  function closeMenu() { var m = $('#menu'); if (m) m.open = false; }
+  function closeMenus() { $$('details.menu[open]').forEach(function (m) { m.open = false; }); }
 
   function handleAction(action) {
-    closeMenu();
+    closeMenus();
     if (action === 'new-period') openPeriodDialog('new');
-    else if (action === 'edit-period') { if (activePeriod()) openPeriodDialog('edit'); }
-    else if (action === 'close-period') { if (activePeriod()) openCloseDialog(); else toast('No period to close'); }
+    else if (action === 'new-session') openSessionDialog();
+    else if (action === 'edit-period') {
+      var p = activePeriod();
+      if (p && isSession(p) && !p.closed) openEndSessionDialog(p); else if (p) openPeriodDialog('edit');
+    }
+    else if (action === 'edit-session') { var s = activePeriod(); if (s && isSession(s)) openSessionDialog(s); }
+    else if (action === 'close-period') { if (activePeriod()) openCloseDialog(); else toast('Nothing to close'); }
     else if (action === 'export') exportJSON();
     else if (action === 'import') { var inp = $('#import-file'); if (inp) inp.click(); }
     else if (action === 'sample') loadSample();
     else if (action === 'help') { var h = $('#help-dialog'); if (h) h.showModal(); }
-    else if (action === 'system-theme') { state.settings.theme = 'system'; save(); applyTheme(); toast('Following your system theme'); }
+    else if (action === 'signin') openAuth('signin');
+    else if (action === 'signup') openAuth('signup');
+    else if (action === 'signout') signOut();
+    else if (action === 'sync-now') { if (window.TempoSync && TempoSync.user) TempoSync.pull(); }
+    else if (action === 'show-done') { ui.filter = 'all'; $$('.seg-btn').forEach(function (x) { x.classList.toggle('is-on', x.dataset.filter === 'all'); }); render(); }
+    else if (action === 'system-theme') { state.settings.theme = 'system'; save({ quiet: true }); applyTheme(); toast('Following your system theme'); }
     else if (action === 'reset') {
       if (confirm('Erase all periods and tasks? This can’t be undone. Export a backup first if you might want them.')) {
-        state = blank(); save(); render(); toast('Everything erased');
+        var now = Date.now();
+        state.tasks.concat(state.periods).forEach(function (o) { state.deleted[o.id] = now; });
+        state.tasks = []; state.periods = []; state.activePeriodId = null; state.running = null;
+        save(); render(); toast('Everything erased');
       }
     }
   }
@@ -1559,33 +1777,59 @@
       var close = e.target.closest('[data-close]');
       if (close) { var d = close.closest('dialog'); if (d) d.close(); return; }
       var now = e.target.closest('[data-now]');
-      if (now) {
-        if (now.dataset.now === 'toggle') toggleTimer(now.dataset.id);
-        else openFocus(now.dataset.id);
-        return;
-      }
-      var menu = $('#menu');
-      if (menu && menu.open && !e.target.closest('#menu')) closeMenu();
+      if (now) { if (now.dataset.now === 'toggle') toggleTimer(now.dataset.id); else openFocus(now.dataset.id); return; }
+      var au = e.target.closest('[data-auth]');
+      if (au) { setAuthMode(au.dataset.auth); setText('#auth-msg', ''); return; }
+      if (!e.target.closest('details.menu')) closeMenus();
+    });
+
+    var acct = $('#account-btn');
+    if (acct) acct.addEventListener('click', function (e) {
+      if (!(window.TempoSync && TempoSync.user)) { e.preventDefault(); openAuth('signin'); }
     });
 
     var popBtn = $('#pop-btn');
-    if (popBtn) {
-      if (miniCanPop()) popBtn.addEventListener('click', togglePopout);
-      else popBtn.hidden = true;
-    }
+    if (popBtn) { if (miniCanPop()) popBtn.addEventListener('click', togglePopout); else popBtn.hidden = true; }
 
     var themeBtn = $('#theme-btn');
     if (themeBtn) themeBtn.addEventListener('click', cycleTheme);
 
     var sel = $('#period-select');
-    if (sel) sel.addEventListener('change', function () { state.activePeriodId = sel.value; save(); render(); });
+    if (sel) sel.addEventListener('change', function () { state.activePeriodId = sel.value; save({ quiet: true }); render(); });
 
-    var dump = $('#dump'), di = $('#dump-input');
+    var dump = $('#dump'), di = $('#dump-input'), pv = $('#dump-preview');
     if (dump && di) {
       dump.addEventListener('submit', function (e) { e.preventDefault(); submitDump(); });
       di.addEventListener('input', function () { autoGrow(di); renderPreview(); });
-      di.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submitDump(); }
+      di.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submitDump(); } });
+    }
+    if (pv) {
+      pv.addEventListener('click', function (e) {
+        var b = e.target.closest('[data-pv]'), row = e.target.closest('.pv-row');
+        if (!b || !row || b.tagName === 'SELECT' || b.tagName === 'INPUT') return;
+        editPreview(row.dataset.key, { include: b.dataset.pv === 'keep' });
+        renderPreview();
+      });
+      pv.addEventListener('change', function (e) {
+        var row = e.target.closest('.pv-row');
+        if (!row) return;
+        var kind = e.target.dataset.pv;
+        if (kind === 'cat') {
+          var v = e.target.value;
+          if (v === '__new') { v = catName(prompt('Name the new category') || ''); if (!v) { renderPreview(); return; } }
+          editPreview(row.dataset.key, { category: v });
+          renderPreview();
+        } else if (kind === 'est') {
+          var m = parseDuration(e.target.value);
+          if (m != null && m > 0) editPreview(row.dataset.key, { estMin: m });
+          renderPreview();
+        } else if (kind === 'title') {
+          editPreview(row.dataset.key, { title: e.target.value.trim() });
+          buildPreview(); updateAddButton();
+        }
+      });
+      pv.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && e.target.matches('.pv-title, .pv-est')) { e.preventDefault(); e.target.blur(); submitDumpSoon(); }
       });
     }
 
@@ -1608,12 +1852,22 @@
         var id = li.dataset.id;
         if (e.target.closest('.play')) toggleTimer(id);
         else if (e.target.closest('.focus-btn')) openFocus(id);
-        else if (e.target.closest('.task-title')) openTaskDialog(id);
+        else if (e.target.closest('[data-est]')) { ui.estEditing = id; render(); var inp = $('[data-est-input="' + CSS.escape(id) + '"]'); if (inp) { inp.focus(); inp.select(); } }
+        else if (e.target.closest('.check, .est-input, .grip')) return;
+        else openTaskDialog(id);     // the whole row opens the editor
       });
       groups.addEventListener('change', function (e) {
         if (!e.target.classList.contains('check')) return;
         var li = e.target.closest('.task');
         if (li) setDone(li.dataset.id, e.target.checked);
+      });
+      groups.addEventListener('keydown', function (e) {
+        if (!e.target.matches('.est-input')) return;
+        if (e.key === 'Enter') { e.preventDefault(); setEstimate(e.target.dataset.estInput, e.target.value); }
+        else if (e.key === 'Escape') { ui.estEditing = null; render(); }
+      });
+      groups.addEventListener('focusout', function (e) {
+        if (e.target.matches('.est-input') && ui.estEditing) setEstimate(e.target.dataset.estInput, e.target.value);
       });
       groups.addEventListener('dragstart', onDragStart);
       groups.addEventListener('dragover', onDragOver);
@@ -1621,50 +1875,29 @@
       groups.addEventListener('dragend', onDragEnd);
     }
 
-    var pf = $('#period-form');
-    if (pf) pf.addEventListener('submit', function (e) {
-      e.preventDefault();
-      if (savePeriodDialog()) $('#period-dialog').close();
-    });
-    var tf = $('#task-form');
-    if (tf) tf.addEventListener('submit', function (e) {
-      e.preventDefault();
-      saveTaskDialog();
-      $('#task-dialog').close();
-    });
-    var td = $('#task-delete');
-    if (td) td.addEventListener('click', function () {
-      var id = ui.editingTaskId;
-      $('#task-dialog').close();
-      deleteTask(id);
-    });
-    var cf = $('#close-form');
-    if (cf) cf.addEventListener('submit', function (e) {
-      e.preventDefault();
-      if (saveCloseDialog()) $('#close-dialog').close();
-    });
+    var on = function (sel, ev, fn) { var el = $(sel); if (el) el.addEventListener(ev, fn); };
+    on('#period-form', 'submit', function (e) { e.preventDefault(); if (savePeriodDialog()) $('#period-dialog').close(); });
+    on('#task-form', 'submit', function (e) { e.preventDefault(); saveTaskDialog(); $('#task-dialog').close(); });
+    on('#task-delete', 'click', function () { var id = ui.editingTaskId; $('#task-dialog').close(); deleteTask(id); });
+    on('#close-form', 'submit', function (e) { e.preventDefault(); if (saveCloseDialog()) $('#close-dialog').close(); });
+    on('#session-form', 'submit', function (e) { e.preventDefault(); if (saveSessionDialog()) $('#session-dialog').close(); });
+    on('#session-form', 'input', updateSessionSummary);
+    on('#session-form', 'change', updateSessionSummary);
+    on('#end-form', 'submit', function (e) { e.preventDefault(); endSession(); $('#end-dialog').close(); });
+    on('#auth-form', 'submit', function (e) { e.preventDefault(); submitAuth(); });
+    on('#import-file', 'change', function (e) { var imp = e.target; if (imp.files && imp.files[0]) importJSON(imp.files[0]); imp.value = ''; });
 
-    var imp = $('#import-file');
-    if (imp) imp.addEventListener('change', function () { if (imp.files && imp.files[0]) importJSON(imp.files[0]); imp.value = ''; });
-
-    var ft = $('#focus-toggle');
-    if (ft) ft.addEventListener('click', function () {
-      if (ui.pomo && ui.pomo.phase === 'break') ui.pomo = null;
-      focusToggle();
-    });
-    var fd = $('#focus-done');
-    if (fd) fd.addEventListener('click', function () { var id = ui.focusId; closeFocus(); setDone(id, true); });
-    var fx = $('#focus-exit');
-    if (fx) fx.addEventListener('click', closeFocus);
-    var pt = $('#pomo-toggle');
-    if (pt) pt.addEventListener('change', function () {
-      state.settings.pomodoro = pt.checked;
-      if (!pt.checked) ui.pomo = null;
+    on('#focus-toggle', 'click', function () { if (ui.pomo && ui.pomo.phase === 'break') ui.pomo = null; focusToggle(); });
+    on('#focus-done', 'click', function () { var id = ui.focusId; closeFocus(); setDone(id, true); });
+    on('#focus-exit', 'click', closeFocus);
+    on('#pomo-toggle', 'change', function (e) {
+      state.settings.pomodoro = e.target.checked;
+      if (!e.target.checked) ui.pomo = null;
       else {
-        if (window.Notification && Notification.permission === 'default') { try { Notification.requestPermission(); } catch (e) { /* ignore */ } }
+        if (window.Notification && Notification.permission === 'default') { try { Notification.requestPermission(); } catch (err) { /* ignore */ } }
         if (state.running && state.running.taskId === ui.focusId) ui.pomo = { phase: 'work', endsAt: Date.now() + 25 * 60000 };
       }
-      save(); renderFocus();
+      save({ quiet: true }); renderFocus();
     });
 
     document.addEventListener('keydown', function (e) {
@@ -1677,12 +1910,10 @@
         return;
       }
       if (document.querySelector('dialog[open]')) return;
-      if (focusOpen) {
-        if (e.key === ' ') { e.preventDefault(); focusToggle(); }
-        return;
-      }
+      if (focusOpen) { if (e.key === ' ') { e.preventDefault(); focusToggle(); } return; }
       var p = activePeriod();
       if (e.key === 'n' && p) { e.preventDefault(); var i = $('#dump-input'); if (i) i.focus(); }
+      else if (e.key === 's') { e.preventDefault(); openSessionDialog(); }
       else if (e.key === '/' && p) { e.preventDefault(); var s = $('#search'); if (s) s.focus(); }
       else if (e.key === 'f' && p) { e.preventDefault(); openFocus(); }
       else if (e.key === 'p' && p) togglePopout();
@@ -1690,22 +1921,33 @@
       else if (e.key === '?') { var h = $('#help-dialog'); if (h) h.showModal(); }
     });
 
-    // Re-render when coming back to the tab (the day may have changed) and when another tab edits data.
-    document.addEventListener('visibilitychange', function () { if (!document.hidden) render(); });
-    window.addEventListener('storage', function (e) { if (e.key === KEY) { state = load(); render(); } });
+    // Coming back to the tab: the day may have changed and another device may have saved.
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) return;
+      render();
+      if (window.TempoSync && TempoSync.user) TempoSync.pull();
+    });
+    window.addEventListener('storage', function (e) { if (e.key === KEY) { state = load(); resetSnap(); render(); } });
     if (window.matchMedia) {
       var mq = window.matchMedia('(prefers-color-scheme: dark)');
       if (mq.addEventListener) mq.addEventListener('change', applyTheme);
     }
   }
+  var submitTimer = null;
+  function submitDumpSoon() { clearTimeout(submitTimer); submitTimer = setTimeout(submitDump, 0); }
 
   // Exposed for the test harness only.
-  window.__tempo = { parseDump: parseDump, classify: classify, parseDuration: parseDuration, setupMiniWindow: setupMiniWindow, mini: mini };
+  window.__tempo = { setupMiniWindow: setupMiniWindow, mini: mini, state: function () { return state; }, metrics: function () { var p = activePeriod(); return p && metrics(p); }, applySyncedDoc: applySyncedDoc, syncDoc: syncDoc };
 
   bind();
   setupMic();
   render();
+  if (window.TempoSync) {
+    TempoSync.init({ getDoc: syncDoc, applyDoc: applySyncedDoc, onStatus: onSyncStatus, onRecovery: function () { openAuth('newpass'); } });
+  }
   setInterval(tick, 1000);
   setInterval(function () { if (state.running && !ui.focusId) render(); }, 30000);
+  // Sessions with a set length count down in real time, timer or not.
+  setInterval(function () { var p = activePeriod(); if (p && isSession(p) && !p.closed && !state.running) renderClock(p, metrics(p)); }, 1000);
   tick();
 })();
