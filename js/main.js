@@ -504,42 +504,150 @@
     setText('#period-name', p.name);
   }
 
-  // The dial: outer ring is the time left (drains as you work), inner ring is the work
-  // still planned. Whatever part of the plan doesn't fit in the time left shows in red.
-  var ticksFor = null;
-  function drawTicks(budgetMin) {
-    var g = $('#dial-ticks');
-    if (!g || ticksFor === budgetMin) return;
-    ticksFor = budgetMin;
-    var hours = budgetMin / 60;
-    var step = hours <= 30 ? 1 : hours <= 60 ? 2 : hours <= 150 ? 5 : 10;
-    var count = Math.floor(hours / step), html = '';
-    for (var i = 0; i < count; i++) {
-      var a = (i * step / hours) * 2 * Math.PI, major = (i * step) % (step * 5) === 0;
-      var r1 = major ? 93 : 95, r2 = 99;
-      html += '<line' + (major ? ' class="major"' : '') + ' x1="' + (100 + r1 * Math.sin(a)).toFixed(2) + '" y1="' + (100 - r1 * Math.cos(a)).toFixed(2) +
-        '" x2="' + (100 + r2 * Math.sin(a)).toFixed(2) + '" y2="' + (100 - r2 * Math.cos(a)).toFixed(2) + '"/>';
+  // ---------- The chronograph ----------
+  // Big dial: total time left in the period (hour hand on the budget scale, minute hand,
+  // ticking second hand, exact readout window). Left sub-dial: stopwatch for the current
+  // task. Right sub-dial: how complete that task is against its estimate.
+  // Built with the target document's own createElementNS, so the same builder draws
+  // the main clock and the pop-out window's clock.
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  // Colours come from CSS tokens (--ch-*) so the watch has a light and a dark face.
+  var CH = { face: 'var(--ch-face)', bezel: 'var(--ch-bezel)', sub: 'var(--ch-sub)', subLine: 'var(--ch-subline)', ink: 'var(--ch-ink)', dim: 'var(--ch-dim)' };
+  var F_NUM = 'Barlow Condensed, Geist, sans-serif', F_MONO = 'Geist Mono, ui-monospace, monospace';
+
+  function sv(parent, tag, attrs, text) {
+    var n = (parent.ownerDocument || document).createElementNS(SVGNS, tag), style = '';
+    for (var k in attrs) {
+      // Presentation attributes can't take var(), so token colours go through style.
+      if (/^(fill|stroke)$/.test(k) && String(attrs[k]).indexOf('var(') === 0) style += k + ':' + attrs[k] + ';';
+      else n.setAttribute(k, attrs[k]);
     }
-    g.innerHTML = html;
+    if (style) n.setAttribute('style', style);
+    if (text != null) n.textContent = text;
+    parent.appendChild(n);
+    return n;
   }
-  function arc(el, start, len) {
-    if (!el) return;
-    len = Math.max(0, Math.min(len, 100));
-    el.style.strokeDasharray = len.toFixed(3) + ' 100';
-    el.style.strokeDashoffset = (-start).toFixed(3);
+  function polar(cx, cy, r, turn) {
+    var a = turn * 2 * Math.PI;
+    return [cx + r * Math.sin(a), cy - r * Math.cos(a)];
+  }
+  function svTick(g, cx, cy, r1, r2, turn, w) {
+    var a = polar(cx, cy, r1, turn), b = polar(cx, cy, r2, turn);
+    sv(g, 'line', { x1: a[0].toFixed(2), y1: a[1].toFixed(2), x2: b[0].toFixed(2), y2: b[1].toFixed(2), stroke: CH.ink, 'stroke-width': w });
+  }
+  function svNum(g, cx, cy, r, turn, text, size, weight) {
+    var p = polar(cx, cy, r, turn);
+    sv(g, 'text', { x: p[0].toFixed(2), y: p[1].toFixed(2), 'text-anchor': 'middle', 'dominant-baseline': 'central',
+      'font-family': F_NUM, 'font-size': size, 'font-weight': weight || 600, fill: CH.ink }, text);
+  }
+  // Hands are drawn pointing at 12; the returned setter rotates them.
+  function svHand(parent, cx, cy, draw) {
+    var g = sv(parent, 'g', { class: 'ch-hand' });
+    draw(g);
+    var last = null;
+    return function (turn) {
+      var deg = (turn * 360).toFixed(2);
+      if (deg === last) return;
+      last = deg;
+      g.setAttribute('transform', 'rotate(' + deg + ' ' + cx + ' ' + cy + ')');
+    };
   }
 
-  // Shared numbers for the main dial and the pop-out mini timer.
-  function dialData(m) {
-    var leftMs = m.left * 60000, over = leftMs < 0;
-    var secs = over ? Math.ceil(-leftMs / 1000) : Math.floor(leftMs / 1000);
-    var b = m.budget > 0 ? m.budget : 1;
-    var leftPct = Math.max(m.left, 0) / b * 100;
-    var fits = Math.min(m.remaining, Math.max(m.left, 0));
+  function buildChrono(svg) {
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    var cx = 110, cy = 110, sx1 = cx - 42, sx2 = cx + 42;
+    sv(svg, 'circle', { cx: cx, cy: cy, r: 108, fill: CH.bezel });
+    sv(svg, 'circle', { cx: cx, cy: cy, r: 101, fill: CH.face });
+    // Minute track: 60 marks, longer every 5.
+    var track = sv(svg, 'g', {});
+    for (var i = 0; i < 60; i++) svTick(track, cx, cy, i % 5 ? 94 : 89, 98, i / 60, i % 5 ? .6 : 1.8);
+    var numerals = sv(svg, 'g', {});
+    sv(svg, 'text', { x: cx, y: cy - 50, 'text-anchor': 'middle', 'font-family': 'Instrument Serif, Georgia, serif', 'font-style': 'italic', 'font-size': 14, fill: CH.ink }, 'Tempo');
+    sv(svg, 'text', { x: cx, y: cy - 39, 'text-anchor': 'middle', 'font-family': F_MONO, 'font-size': 4.6, 'letter-spacing': 1.4, fill: CH.dim }, 'HOURS LEFT');
+
+    // A simple sub-dial: 4 main marks, 8 minor, an optional progress arc, one hand, a label.
+    function subDial(sx, label) {
+      sv(svg, 'circle', { cx: sx, cy: cy, r: 23, fill: CH.sub, stroke: CH.subLine, 'stroke-width': .8 });
+      var arcEl = sv(svg, 'circle', { cx: sx, cy: cy, r: 19, fill: 'none', stroke: CH.ink, 'stroke-width': 2.2, 'stroke-opacity': .85,
+        pathLength: 100, 'stroke-dasharray': '0 100', transform: 'rotate(-90 ' + sx + ' ' + cy + ')' });
+      for (var j = 0; j < 12; j++) svTick(svg, sx, cy, j % 3 ? 20 : 17.5, 22.5, j / 12, j % 3 ? .5 : 1.2);
+      var lab = sv(svg, 'text', { x: sx, y: cy + 15.6, 'text-anchor': 'middle', 'font-family': F_MONO, 'font-size': 3.5, 'letter-spacing': .5, fill: CH.dim }, label);
+      var val = sv(svg, 'text', { x: sx, y: cy + 9, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-family': F_NUM, 'font-size': 7.5, 'font-weight': 600, fill: CH.ink }, '');
+      var setHand = svHand(svg, sx, cy, function (g) {
+        sv(g, 'line', { x1: sx, y1: cy + 4, x2: sx, y2: cy - 20, stroke: CH.ink, 'stroke-width': 1.3, 'stroke-linecap': 'round' });
+        sv(g, 'circle', { cx: sx, cy: cy, r: 2.3, fill: CH.ink });
+      });
+      return { hand: setHand, arc: arcEl, label: lab, value: val };
+    }
+    var taskDial = subDial(sx1, 'TASK TIME');
+    var doneDial = subDial(sx2, 'TASK DONE');
+
+    // Readout window at 6 o'clock.
+    sv(svg, 'rect', { x: cx - 27, y: cy + 50, width: 54, height: 15, rx: 2.5, fill: CH.sub, stroke: CH.subLine, 'stroke-width': .8 });
+    var readout = sv(svg, 'text', { x: cx, y: cy + 57.8, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-family': F_MONO, 'font-size': 8.4, fill: CH.ink }, '');
+
+    var hourHand = svHand(svg, cx, cy, function (g) {
+      sv(g, 'path', { d: 'M' + (cx - 4.2) + ' ' + (cy + 12) + ' L' + (cx - 3) + ' ' + (cy - 50) + ' L' + cx + ' ' + (cy - 57) + ' L' + (cx + 3) + ' ' + (cy - 50) + ' L' + (cx + 4.2) + ' ' + (cy + 12) + ' Z', fill: CH.ink });
+      sv(g, 'rect', { x: cx - 1, y: cy - 46, width: 2, height: 28, fill: CH.face });
+    });
+    var minuteHand = svHand(svg, cx, cy, function (g) {
+      sv(g, 'path', { d: 'M' + (cx - 2.8) + ' ' + (cy + 14) + ' L' + (cx - 1.8) + ' ' + (cy - 82) + ' L' + cx + ' ' + (cy - 88) + ' L' + (cx + 1.8) + ' ' + (cy - 82) + ' L' + (cx + 2.8) + ' ' + (cy + 14) + ' Z', fill: CH.ink });
+      sv(g, 'rect', { x: cx - .8, y: cy - 78, width: 1.6, height: 50, fill: CH.face });
+    });
+    var secondHand = svHand(svg, cx, cy, function (g) {
+      sv(g, 'line', { x1: cx, y1: cy + 24, x2: cx, y2: cy - 96, stroke: CH.ink, 'stroke-width': .9 });
+      sv(g, 'rect', { x: cx - 2.2, y: cy + 13, width: 4.4, height: 11, rx: 1.2, fill: CH.ink });
+    });
+    sv(svg, 'circle', { cx: cx, cy: cy, r: 4.2, fill: CH.ink });
+    sv(svg, 'circle', { cx: cx, cy: cy, r: 1.5, fill: CH.face });
+
+    var numeralsFor = null;
+    function drawNumerals(budgetH) {
+      if (numeralsFor === budgetH) return;
+      numeralsFor = budgetH;
+      while (numerals.firstChild) numerals.removeChild(numerals.firstChild);
+      var step = budgetH <= 12 ? 1 : budgetH <= 24 ? 2 : budgetH <= 48 ? 4 : budgetH <= 60 ? 5 : 10;
+      for (var h = 0; h < budgetH - step / 2; h += step) {
+        var label = h === 0 ? String(Math.round(budgetH)) : String(h);
+        svNum(numerals, cx, cy, 78, h / budgetH, label, h === 0 ? 15 : 12.5);
+      }
+    }
+
+    function setArc(el, frac) { el.setAttribute('stroke-dasharray', (Math.max(0, Math.min(frac, 1)) * 100).toFixed(2) + ' 100'); }
+
+    // s: { left (sec, may be negative), budget (sec), task: { spent, est } | null }
+    return function update(s) {
+      var budgetH = Math.max(s.budget / 3600, 1);
+      drawNumerals(budgetH);
+      var L = Math.max(s.left, 0), whole = Math.floor(L);
+      hourHand(Math.min(L / Math.max(s.budget, 1), 1));
+      minuteHand((L % 3600) / 3600);
+      secondHand((whole % 60) / 60);
+      var over = s.left < 0, ov = Math.ceil(-s.left);
+      readout.textContent = over
+        ? '+' + Math.floor(ov / 3600) + ':' + pad(Math.floor(ov / 60) % 60) + ' OVER'
+        : Math.floor(whole / 3600) + ':' + pad(Math.floor(whole / 60) % 60) + ':' + pad(whole % 60);
+
+      if (s.task) {
+        var spent = Math.floor(s.task.spent);
+        taskDial.hand((spent % 3600) / 3600);
+        setArc(taskDial.arc, 0);
+        taskDial.value.textContent = spent >= 3600 ? Math.floor(spent / 3600) + 'h' + pad(Math.floor(spent / 60) % 60) : Math.floor(spent / 60) + 'm';
+        var frac = s.task.est > 0 ? s.task.spent / s.task.est : 0;
+        doneDial.hand(Math.min(frac, 1));
+        setArc(doneDial.arc, frac);
+        doneDial.value.textContent = frac > 1 ? 'OVER' : Math.round(frac * 100) + '%';
+      } else {
+        taskDial.hand(0); doneDial.hand(0); setArc(taskDial.arc, 0); setArc(doneDial.arc, 0);
+        taskDial.value.textContent = '–'; doneDial.value.textContent = '–';
+      }
+    };
+  }
+
+  function chronoState(m, cur) {
     return {
-      over: over, leftPct: leftPct, workPct: fits / b * 100, overPct: (m.remaining - fits) / b * 100,
-      hm: (over ? '+' : '') + Math.floor(secs / 3600) + ':' + pad(Math.floor(secs / 60) % 60),
-      sec: ':' + pad(secs % 60), label: over ? 'over budget' : 'left to work'
+      left: m.left * 60, budget: m.budget * 60,
+      task: cur ? { spent: loggedMs(cur.task) / 1000, est: cur.task.estMin * 60 } : null
     };
   }
   function currentTask(p) {
@@ -549,30 +657,22 @@
     return next ? { task: next, running: false } : null;
   }
 
+  var mainChrono = null;
   function renderClock(p, m) {
-    var dial = $('#clock');
-    if (!dial) return;
-    var d = dialData(m);
-    var cur = currentTask(p);
-    dial.classList.toggle('is-over', d.over);
-    dial.classList.toggle('is-running', !!(cur && cur.running));
-    drawTicks(m.budget);
-    setText('#clock-label', d.label);
-    setText('#clock-hm', d.hm);
-    setText('#clock-sec', d.sec);
+    var svg = $('#chrono');
+    if (!svg) return;
+    if (!mainChrono) mainChrono = buildChrono(svg);
+    var cur = currentTask(p), cs = chronoState(m, cur);
+    mainChrono(cs);
+    var wrap = $('#clock');
+    if (wrap) wrap.classList.toggle('is-running', !!(cur && cur.running));
+    var over = m.left < 0;
+    svg.setAttribute('aria-label', (over ? fmt(-m.left) + ' over budget' : fmt(m.left) + ' left to work') + ' of ' + fmt(m.budget) +
+      (cur ? '. ' + (cur.running ? 'Working on ' : 'Up next: ') + cur.task.title : ''));
     setText('#clock-sub', 'of ' + fmt(m.budget) + ' · ' + fmt(m.used) + ' worked');
-    arc($('#dial-left'), 0, d.leftPct);
-    arc($('#dial-work'), 0, d.workPct);
-    arc($('#dial-over'), d.leftPct, d.overPct);
-    var knob = $('#dial-knob');
-    if (knob) {
-      var a = Math.min(d.leftPct, 100) / 100 * 2 * Math.PI;
-      knob.setAttribute('cx', (100 + 84 * Math.sin(a)).toFixed(2));
-      knob.setAttribute('cy', (100 - 84 * Math.cos(a)).toFixed(2));
-    }
     setText('#lg-left', m.left >= 0 ? fmt(m.left) : '−' + fmt(-m.left));
     setText('#lg-work', fmt(m.remaining));
-    renderMini(p, m, d, cur);
+    renderMini(p, m, cs, cur);
   }
 
   function renderNow(p, m) {
@@ -734,23 +834,30 @@
   }
 
   // ---------- Theme ----------
+  function effectiveTheme() {
+    var mode = state.settings.theme;
+    if (mode === 'light' || mode === 'dark') return mode;
+    return window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
   function applyTheme() {
     var mode = state.settings.theme;
     if (mode === 'light' || mode === 'dark') document.documentElement.setAttribute('data-theme', mode);
     else document.documentElement.removeAttribute('data-theme');
     syncMiniTheme();
-    var btn = $('#theme-btn');
+    var btn = $('#theme-btn'), dark = effectiveTheme() === 'dark';
     if (btn) {
-      btn.innerHTML = mode === 'light' ? ICON.sun : mode === 'dark' ? ICON.moon : ICON.auto;
-      btn.setAttribute('aria-label', 'Theme: ' + mode + '. Click to change.');
-      btn.title = 'Theme: ' + mode + ' (t)';
+      btn.innerHTML = dark ? ICON.sun : ICON.moon;
+      btn.setAttribute('aria-label', dark ? 'Switch to light mode' : 'Switch to dark mode');
+      btn.title = (dark ? 'Light mode' : 'Dark mode') + ' (t)';
     }
+    var sys = $('[data-action="system-theme"]');
+    if (sys) sys.hidden = mode !== 'light' && mode !== 'dark';
   }
   function cycleTheme() {
-    var order = ['system', 'light', 'dark'];
-    state.settings.theme = order[(order.indexOf(state.settings.theme) + 1) % 3];
+    state.settings.theme = effectiveTheme() === 'dark' ? 'light' : 'dark';
     save(); applyTheme();
-    toast('Theme: ' + state.settings.theme);
+    if (mini.canvas) render();
+    toast(state.settings.theme === 'dark' ? 'Dark mode' : 'Light mode');
   }
 
   // ---------- Toast ----------
@@ -1073,17 +1180,7 @@
   var mini = { win: null, video: null, canvas: null };
   var MINI_HTML =
     '<div class="mini" id="mini">' +
-      '<div class="mini-dial">' +
-        '<svg viewBox="0 0 120 120" aria-hidden="true"><g transform="rotate(-90 60 60)">' +
-          '<circle class="dial-track" cx="60" cy="60" r="52" pathLength="100"/>' +
-          '<circle class="dial-left" data-m="left" cx="60" cy="60" r="52" pathLength="100"/>' +
-          '<circle class="dial-work-track" cx="60" cy="60" r="42" pathLength="100"/>' +
-          '<circle class="dial-work" data-m="work" cx="60" cy="60" r="42" pathLength="100"/>' +
-          '<circle class="dial-over" data-m="over" cx="60" cy="60" r="42" pathLength="100"/>' +
-        '</g></svg>' +
-        '<div class="mini-face"><span class="mini-time"><span data-m="hm"></span><span class="clock-sec" data-m="sec"></span></span>' +
-        '<span class="clock-label" data-m="label"></span></div>' +
-      '</div>' +
+      '<svg class="mini-chrono" id="mini-chrono" viewBox="0 0 220 220" aria-hidden="true"></svg>' +
       '<div class="mini-side">' +
         '<span class="now-label" data-m="state"></span>' +
         '<span class="mini-title" data-m="title"></span>' +
@@ -1108,9 +1205,9 @@
   }
 
   function openDocPip() {
-    window.documentPictureInPicture.requestWindow({ width: 360, height: 168 }).then(function (win) {
+    window.documentPictureInPicture.requestWindow({ width: 380, height: 190 }).then(function (win) {
       setupMiniWindow(win);
-      win.addEventListener('pagehide', function () { mini.win = null; updatePopBtn(); });
+      win.addEventListener('pagehide', function () { mini.win = null; mini.chrono = null; updatePopBtn(); });
     }).catch(function () { toast('Couldn’t open the floating timer'); });
   }
 
@@ -1122,6 +1219,7 @@
     doc.title = 'Tempo';
     doc.body.className = 'mini-body';
     doc.body.innerHTML = MINI_HTML;
+    mini.chrono = buildChrono(doc.getElementById('mini-chrono'));
     syncMiniTheme();
     doc.addEventListener('click', function (e) {
       var b = e.target.closest('[data-mini]');
@@ -1181,16 +1279,12 @@
     btn.title = (open ? 'Close floating timer' : 'Pop out timer') + ' (p)';
   }
 
-  function renderMini(p, m, d, cur) {
-    if (mini.win) {
+  function renderMini(p, m, cs, cur) {
+    if (mini.win && mini.chrono) {
       var doc = mini.win.document;
       var q = function (k) { return doc.querySelector('[data-m="' + k + '"]'); };
-      var root = doc.getElementById('mini');
-      if (!root) return;
-      root.classList.toggle('is-over', d.over);
-      root.classList.toggle('is-running', !!(cur && cur.running));
-      arc(q('left'), 0, d.leftPct); arc(q('work'), 0, d.workPct); arc(q('over'), d.leftPct, d.overPct);
-      q('hm').textContent = d.hm; q('sec').textContent = d.sec; q('label').textContent = d.label;
+      mini.chrono(cs);
+      doc.getElementById('mini').classList.toggle('is-running', !!(cur && cur.running));
       q('state').textContent = cur ? (cur.running ? 'Working on' : 'Up next') : 'All clear';
       q('title').textContent = cur ? cur.task.title : 'Nothing left to do';
       q('meta').textContent = cur ? fmt(loggedMin(cur.task)) + ' of ' + fmt(cur.task.estMin) + ' · ' + cur.task.category : '';
@@ -1198,47 +1292,46 @@
       tb.textContent = cur && cur.running ? 'Pause' : 'Start';
       tb.disabled = db.disabled = !cur;
     }
-    if (mini.canvas) drawMiniCanvas(d, cur);
+    if (mini.canvas) drawMiniCanvas(cs, cur);
   }
 
-  function drawMiniCanvas(d, cur) {
-    var c = mini.canvas, x = c.getContext('2d'), cs = getComputedStyle(document.documentElement);
-    var v = function (n) { return cs.getPropertyValue(n).trim(); };
-    var W = c.width, H = c.height;
-    x.fillStyle = v('--surface'); x.fillRect(0, 0, W, H);
-    var cx = 150, cy = H / 2, start = -Math.PI / 2;
-    var ring = function (r, w, color, from, pct) {
-      if (pct <= 0) return;
-      x.beginPath(); x.lineWidth = w; x.lineCap = 'round'; x.strokeStyle = color;
-      x.arc(cx, cy, r, start + from / 100 * 2 * Math.PI, start + Math.min(from + pct, 100) / 100 * 2 * Math.PI);
-      x.stroke();
+  // Safari fallback: the same chronograph, painted onto a canvas that floats as a video.
+  function drawMiniCanvas(cs, cur) {
+    var c = mini.canvas, x = c.getContext('2d'), st = getComputedStyle(document.documentElement);
+    var tok = function (n) { return st.getPropertyValue(n).trim(); };
+    var CH = { face: tok('--ch-face'), bezel: tok('--ch-bezel'), ink: tok('--ch-ink'), dim: tok('--ch-dim') };
+    var W = c.width, H = c.height, cx = 150, cy = H / 2, R = 128;
+    var line = function (r1, r2, turn, w) {
+      var a = turn * 2 * Math.PI;
+      x.beginPath(); x.lineWidth = w; x.strokeStyle = CH.ink;
+      x.moveTo(cx + r1 * Math.sin(a), cy - r1 * Math.cos(a)); x.lineTo(cx + r2 * Math.sin(a), cy - r2 * Math.cos(a)); x.stroke();
     };
-    ring(115, 18, v('--surface-2'), 0, 100);
-    ring(115, 18, d.over ? v('--bad') : v('--accent'), 0, d.leftPct);
-    ring(92, 5, v('--line'), 0, 100);
-    ring(92, 5, v('--ink'), 0, d.workPct);
-    ring(92, 5, v('--bad'), d.leftPct, d.overPct);
-    x.textAlign = 'center'; x.textBaseline = 'middle';
-    x.fillStyle = d.over ? v('--bad') : v('--ink');
-    x.font = '400 64px "Instrument Serif", Georgia, serif';
-    x.fillText(d.hm, cx, cy - 6);
-    x.fillStyle = v('--ink-3');
-    x.font = '500 17px "Geist Mono", monospace';
-    x.fillText(d.label.toUpperCase(), cx, cy + 40);
-    x.textAlign = 'left';
-    x.fillText((cur ? (cur.running ? 'WORKING ON' : 'UP NEXT') : 'ALL CLEAR'), 300, 105);
-    x.fillStyle = v('--ink');
-    x.font = '500 30px Geist, system-ui, sans-serif';
+    x.fillStyle = CH.face; x.fillRect(0, 0, W, H);
+    x.beginPath(); x.arc(cx, cy, R + 8, 0, 2 * Math.PI); x.fillStyle = CH.bezel; x.fill();
+    x.beginPath(); x.arc(cx, cy, R, 0, 2 * Math.PI); x.fillStyle = CH.face; x.fill();
+    for (var i = 0; i < 60; i++) line(i % 5 ? R - 7 : R - 14, R - 2, i / 60, i % 5 ? 1 : 3);
+    var L = Math.max(cs.left, 0), whole = Math.floor(L);
+    line(-14, R * .55, Math.min(L / Math.max(cs.budget, 1), 1), 9);
+    line(-16, R * .86, (L % 3600) / 3600, 5);
+    line(-26, R * .95, (whole % 60) / 60, 1.6);
+    x.beginPath(); x.arc(cx, cy, 6, 0, 2 * Math.PI); x.fillStyle = CH.ink; x.fill();
+    x.fillStyle = CH.ink; x.textAlign = 'left'; x.textBaseline = 'middle';
+    x.font = '400 46px "Geist Mono", monospace';
+    var ov = Math.ceil(-cs.left);
+    x.fillText(cs.left < 0 ? '+' + Math.floor(ov / 3600) + ':' + pad(Math.floor(ov / 60) % 60) : Math.floor(whole / 3600) + ':' + pad(Math.floor(whole / 60) % 60) + ':' + pad(whole % 60), 310, 78);
+    x.fillStyle = CH.dim; x.font = '500 15px "Geist Mono", monospace';
+    x.fillText(cs.left < 0 ? 'OVER BUDGET' : 'LEFT TO WORK', 312, 114);
+    x.fillText(cur ? (cur.running ? 'WORKING ON' : 'UP NEXT') : 'ALL CLEAR', 312, 162);
+    x.fillStyle = CH.ink; x.font = '500 27px Geist, system-ui, sans-serif';
     var title = cur ? cur.task.title : 'Nothing left to do';
-    while (title.length > 3 && x.measureText(title).width > 320) title = title.slice(0, -2);
+    while (title.length > 3 && x.measureText(title).width > 310) title = title.slice(0, -2);
     if (cur && title !== cur.task.title) title = title.trim() + '…';
-    x.fillText(title, 300, 145);
-    x.fillStyle = v('--ink-2');
-    x.font = '400 21px Geist, system-ui, sans-serif';
-    if (cur) x.fillText(fmt(loggedMin(cur.task)) + ' of ' + fmt(cur.task.estMin), 300, 182);
-    x.fillStyle = v('--ink-3');
-    x.font = '400 16px Geist, system-ui, sans-serif';
-    x.fillText(cur && cur.running ? '❚❚ pause to stop the clock' : '▶ play to start the clock', 300, 222);
+    x.fillText(title, 312, 196);
+    if (cur && cs.task) {
+      var frac = cs.task.est > 0 ? cs.task.spent / cs.task.est : 0;
+      x.fillStyle = CH.dim; x.font = '400 18px Geist, system-ui, sans-serif';
+      x.fillText(fmt(cs.task.spent / 60) + ' of ' + fmt(cs.task.est / 60) + ' · ' + (frac > 1 ? 'over' : Math.round(frac * 100) + '% done'), 312, 232);
+    }
   }
 
   // ---------- Focus mode ----------
@@ -1451,6 +1544,7 @@
     else if (action === 'import') { var inp = $('#import-file'); if (inp) inp.click(); }
     else if (action === 'sample') loadSample();
     else if (action === 'help') { var h = $('#help-dialog'); if (h) h.showModal(); }
+    else if (action === 'system-theme') { state.settings.theme = 'system'; save(); applyTheme(); toast('Following your system theme'); }
     else if (action === 'reset') {
       if (confirm('Erase all periods and tasks? This can’t be undone. Export a backup first if you might want them.')) {
         state = blank(); save(); render(); toast('Everything erased');

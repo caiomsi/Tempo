@@ -20,6 +20,7 @@
   --shadow: 0 1px 2px rgb(40 30 10 / .06), 0 8px 24px rgb(40 30 10 / .06);
   --c-school: #3f5f9e; --c-work: #b5532c; --c-home: #5b7a3a; --c-errands: #9a6a12;
   --c-health: #2f7d6e; --c-money: #6b4f9e; --c-personal: #a8436b; --c-other: #77736a;
+  --ch-face: #ffffff; --ch-bezel: #141414; --ch-sub: #f2f2ef; --ch-subline: #d4d4ce; --ch-ink: #111111; --ch-dim: #75736c;
 
   --f-display: "Instrument Serif", Georgia, serif;
   --f-ui: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -43,6 +44,7 @@
     --bad: #ec7466; --bad-soft: #3a1c18;
     --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 10px 30px rgb(0 0 0 / .35);
     --c-school: #8fa8e0; --c-work: #e27c50; --c-home: #9fbf78; --c-errands: #ddb050; --c-health: #6cc2b0; --c-money: #b29ae0; --c-personal: #e386ab; --c-other: #a39e93;
+   --ch-face: #0c0c0c; --ch-bezel: #2c2c2a; --ch-sub: #171717; --ch-subline: #3a3a38; --ch-ink: #f4f4f0; --ch-dim: #9a9a94;
     color-scheme: dark;
   }
 }
@@ -56,6 +58,7 @@
   --bad: #ec7466; --bad-soft: #3a1c18;
   --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 10px 30px rgb(0 0 0 / .35);
   --c-school: #8fa8e0; --c-work: #e27c50; --c-home: #9fbf78; --c-errands: #ddb050; --c-health: #6cc2b0; --c-money: #b29ae0; --c-personal: #e386ab; --c-other: #a39e93;
+   --ch-face: #0c0c0c; --ch-bezel: #2c2c2a; --ch-sub: #171717; --ch-subline: #3a3a38; --ch-ink: #f4f4f0; --ch-dim: #9a9a94;
   color-scheme: dark;
 }
 
@@ -183,44 +186,18 @@ kbd, code {
 .period-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .period-name { margin: 0; font: 400 30px/1.05 var(--f-display); overflow-wrap: anywhere; }
 
-.dial { position: relative; width: min(100%, 360px); aspect-ratio: 1; margin: 6px auto 0; }
-.dial::before {
-  content: ""; position: absolute; inset: 16%; border-radius: 50%;
-  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%);
-  opacity: 0; transition: opacity .6s;
-}
-.dial.is-running::before { opacity: 1; animation: breathe 3s ease-in-out infinite; }
-@keyframes breathe { 50% { opacity: .5; } }
-.dial-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-.dial-svg circle { fill: none; }
-.dial-track { stroke: var(--surface-2); stroke-width: 9; }
-.dial-left { stroke: var(--accent); stroke-width: 9; stroke-linecap: round; transition: stroke-dasharray .6s cubic-bezier(.2,.7,.2,1); }
-.dial-work-track { stroke: var(--line); stroke-width: 2.5; }
-.dial-work { stroke: var(--ink); stroke-width: 2.5; stroke-linecap: round; transition: stroke-dasharray .6s, stroke-dashoffset .6s; }
-.dial-over { stroke: var(--bad); stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 0 100; transition: stroke-dasharray .6s, stroke-dashoffset .6s; }
-.dial-svg .dial-knob { fill: var(--surface); stroke: var(--accent); stroke-width: 3; transition: cx .6s, cy .6s; }
-.dial.is-running .dial-knob { fill: var(--accent); }
-.dial-ticks line { stroke: var(--ink-3); stroke-width: .8; stroke-linecap: round; opacity: .5; }
-.dial-ticks line.major { stroke-width: 1.4; opacity: .9; }
-.dial.is-over .dial-left, .dial.is-over .dial-knob { stroke: var(--bad); }
-
-.dial-face {
-  position: absolute; inset: 0;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
-  text-align: center;
-}
-.clock-label { font: 500 11px/1 var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
-.clock-time { font: 400 clamp(52px, 15vw, 72px)/1 var(--f-display); font-variant-numeric: tabular-nums; letter-spacing: -.01em; white-space: nowrap; }
-.clock-sec { font: 400 .36em/1 var(--f-mono); color: var(--ink-3); margin-left: 3px; vertical-align: 1.2em; }
+/* The chronograph: white face in light mode, black face in dark mode (--ch-* tokens). */
+.chrono { position: relative; width: min(100%, 370px); aspect-ratio: 1; margin: 10px auto 4px; }
+.chrono svg { width: 100%; height: 100%; display: block; overflow: visible; filter: drop-shadow(0 10px 24px rgb(0 0 0 / .18)); }
+.chrono svg *, .mini-chrono * { transition: fill .3s, stroke .3s; }
+.chrono .ch-hand, .mini-chrono .ch-hand { transition: none; }
+.theme-btn svg { width: 19px; height: 19px; }
+.chrono text { font-variant-numeric: tabular-nums; }
+.clock-meta { display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 2px; }
 .clock-sub { font-size: 13px; color: var(--ink-2); }
-.dial-face .status-pill { margin-top: 6px; }
-.dial.is-over .clock-time { color: var(--bad); }
-
 .dial-legend { display: flex; justify-content: center; gap: 18px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-3); margin: 4px 0 6px; }
 .dial-legend b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; margin-left: 2px; }
-.sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
-.sw-left { background: var(--accent); }
-.sw-work { background: var(--ink); height: 3px; vertical-align: 2px; }
+@keyframes breathe { 50% { opacity: .5; } }
 
 .now {
   display: flex; align-items: center; gap: 10px;
@@ -259,20 +236,8 @@ kbd, code {
 
 /* ---------- Pop-out mini timer (lives in its own window) ---------- */
 .mini-body { margin: 0; min-height: 100vh; display: grid; background: var(--surface); overflow: hidden; }
-.mini { display: flex; align-items: center; gap: 16px; padding: 12px 16px 12px 12px; }
-.mini-dial { position: relative; flex: 0 0 auto; width: min(140px, 42vw); aspect-ratio: 1; }
-.mini-dial svg { width: 100%; height: 100%; }
-.mini-dial circle { fill: none; }
-.mini .dial-track { stroke-width: 8; }
-.mini .dial-left { stroke-width: 8; }
-.mini .dial-work-track, .mini .dial-work, .mini .dial-over { stroke-width: 3; }
-.mini.is-over .dial-left { stroke: var(--bad); }
-.mini.is-running .mini-dial { animation: breathe 3s ease-in-out infinite; }
-.mini-face { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; }
-.mini-time { font: 400 31px/1 var(--f-display); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.mini.is-over .mini-time { color: var(--bad); }
-.mini .clock-label { font-size: 9px; }
-.mini .clock-sec { font-size: 12px; vertical-align: 1.1em; }
+.mini { display: flex; align-items: center; gap: 14px; padding: 10px 14px 10px 10px; }
+.mini-chrono { flex: 0 0 auto; width: min(170px, 46vw); aspect-ratio: 1; overflow: visible; }
 .mini-side { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .mini-title { font-weight: 500; font-size: 15px; line-height: 1.25; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .mini-meta { font: 12px/1.3 var(--f-mono); color: var(--ink-2); }

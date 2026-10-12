@@ -6,23 +6,32 @@ conventions.
 
 ## What it does
 
-- **Left panel (the dial):** a big countdown of the time left in the period's hour
-  budget (the budget minus time worked), ticking live while any task timer runs. The
-  thick outer ring is the time left and drains as you work, with a knob at its end.
-  The thin inner ring is the planned work still to do, drawn red past the point where
-  it no longer fits. There are hour ticks around the edge and the status badge sits on
-  the dial face. Below it: the current or next task, pace, and estimate accuracy.
+- **Left panel (the chronograph):** an analog watch face built by `buildChrono(svg)`,
+  which returns an `update(state)` fed by `chronoState(m, cur)`.
+  - Big dial: the total time left in the period's hour budget. The hour hand is on a
+    0–budget scale (numerals drawn per budget), plus a minute hand, a once-a-second
+    second hand, and an `h:mm:ss` readout window ("+h:mm OVER" past the budget).
+  - Left sub-dial: a stopwatch for the current task (running, or else up next).
+  - Right sub-dial: that task's % complete against its estimate, with a filling arc.
+  - Colours come from the `--ch-*` tokens: a white face in light mode and a black face
+    in dark mode. `sv()` routes `var()` colours through `style`, because SVG
+    attributes can't take `var()`.
+  - Below it: the status badge, time left vs. work planned, the current task, pace,
+    and estimate accuracy.
 - **Pop-out mini timer** (the button next to Edit, or `p`): in Chrome and Edge,
   Document Picture-in-Picture opens a small always-on-top window (`setupMiniWindow`,
   `MINI_HTML`, `.mini*` CSS) with the dial plus Start/Pause/Done. Elsewhere, such as
   Safari, `drawMiniCanvas` paints the timer onto a canvas, which floats as a
   video-PiP; its play/pause button toggles the task timer through `mediaSession`.
-  `dialData(m)` is the math shared by the main dial and the mini timer.
+  The pop-out builds the same chronograph with `buildChrono`; the canvas fallback draws a simplified one.
 - **Right panel ("board"):** a plain-language brain-dump input with dictation, and
   the tasks grouped by **category**.
 - The cutoff is computed globally. Open tasks are ranked by priority, then `order`,
   and once their summed remaining time passes the time left, every task from that
   point down is marked "won't fit".
+
+- **Theme:** the top-bar button is a sun/moon toggle (`t`). It follows the system until
+  the first click, and the menu offers "Match system theme" to go back.
 
 ## How it runs
 
