@@ -282,7 +282,12 @@
     <form method="dialog" id="session-form">
       <h2 class="dialog-title" id="session-dialog-title">Start a study session</h2>
       <label class="field"><span>Name</span><input name="name" maxlength="60" placeholder="Study session"></label>
-      <label class="field"><span>How long do you have? <em class="opt">optional</em></span><input name="length" inputmode="decimal" placeholder="Leave blank and Tempo works it out"></label>
+      <p class="session-when">Starts now<span id="session-now"></span></p>
+      <div class="field-row">
+        <label class="field"><span>Ends at <em class="opt">optional</em></span><input name="until" type="time" aria-describedby="session-sum"></label>
+        <label class="field"><span>or how long</span><input name="length" inputmode="decimal" placeholder="e.g. 2h"></label>
+      </div>
+      <p class="hint">Pick when you have to stop, or how long you have. Leave both blank and Tempo works out when you'll be done.</p>
       <label class="check-field"><input type="checkbox" name="breaks" checked> <span>Include short breaks (10 min after every 50 min of work)</span></label>
       <fieldset class="source" id="session-source" hidden>
         <legend class="dialog-sub">What will you work on?</legend>
@@ -358,7 +363,7 @@
       </table>
       <p class="hint" style="margin-top:10px">Before you add anything, the list under the box shows what Tempo understood. Click a category, a name or a time to fix it. Things that aren't tasks ("I'm so tired") and duplicates are skipped, but you can add them anyway. When you change a category, Tempo learns from it.</p>
       <h3 class="dialog-sub">Study sessions</h3>
-      <p class="hint">A session is one sitting. Pick tasks from your week or start a fresh list. Say how long you have, or leave it blank and Tempo works out when you'll be done, including short breaks. Time you work in a session also counts toward the week.</p>
+      <p class="hint">A session is one sitting, starting now. Pick tasks from your week or start a fresh list. Set the time it ends (or how long you have, or type "until 6pm"), or leave it blank and Tempo works out when you'll be done, including short breaks. Time you work in a session also counts toward the week.</p>
       <h3 class="dialog-sub">How the clock works</h3>
       <p class="hint">The clock starts at your period's budget and counts down while you run a task timer. Tasks marked done without a timer count their estimate as time spent. Tasks are ranked by priority. Those lower down that don't fit into the time left are labelled <em>won't fit</em>.</p>
       <div class="dialog-actions">

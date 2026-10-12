@@ -72,6 +72,12 @@ Periods have `kind: 'week' | 'session'`.
 - Linked week tasks keep their week `periodId`, so time worked in the session counts toward
   the week too.
 - New tasks added inside a week-tied session go onto the week and are linked to the session.
+- Sessions always start now. The dialog takes an **"Ends at"** time (`<input type=time>`)
+  or a length, and "until 6pm" typed in the length box also works.
+  - `sessionEnd()` turns either into minutes, using `TP.parseEndTime`: a bare "6" means the
+    next 6 o'clock, and a time that has already passed rolls to tomorrow.
+  - `budgetMin` is counted from the moment the session starts, so the countdown ends
+    exactly at the chosen time.
 - `sessionMetrics()` counts only logs after `startedAt`.
   - With a set length, the session counts down in real time.
   - Auto sessions show the time left to finish.

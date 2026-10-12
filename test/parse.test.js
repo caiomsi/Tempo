@@ -122,5 +122,17 @@ test('parseDuration forms', function () {
   assert.strictEqual(P.parseDuration('1:15'), 75); assert.strictEqual(P.parseDuration('~45m'), 45);
 });
 
+// ---------- Session end times ----------
+function at(h, m, dayOffset) { var d = new Date(2026, 9, 12 + (dayOffset || 0), h, m || 0, 0, 0); return d.getTime(); }
+var NOW = at(14, 10);   // 2:10 PM
+test('6pm today', function () { assert.strictEqual(P.parseEndTime('6pm', NOW), at(18)); });
+test('6:30 pm with until', function () { assert.strictEqual(P.parseEndTime('until 6:30 pm', NOW), at(18, 30)); });
+test('bare 6 means the next 6 o\'clock (6pm)', function () { assert.strictEqual(P.parseEndTime('6', NOW), at(18)); });
+test('bare 3 at 2:10pm means 3pm', function () { assert.strictEqual(P.parseEndTime('till 3', NOW), at(15)); });
+test('24-hour input', function () { assert.strictEqual(P.parseEndTime('16:45', NOW, true), at(16, 45)); });
+test('time already passed rolls to tomorrow', function () { assert.strictEqual(P.parseEndTime('1am', NOW), at(1, 0, 1)); });
+test('24h earlier than now rolls to tomorrow', function () { assert.strictEqual(P.parseEndTime('09:00', NOW, true), at(9, 0, 1)); });
+test('not a time', function () { assert.strictEqual(P.parseEndTime('2h', NOW), null); assert.strictEqual(P.parseEndTime('25:00', NOW), null); assert.strictEqual(P.parseEndTime('13pm', NOW), null); });
+
 console.log(passed + ' passed, ' + failures + ' failed');
 process.exit(failures ? 1 : 0);

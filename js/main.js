@@ -323,7 +323,7 @@
   function renderHead(p, m) {
     var line;
     if (isSession(p)) {
-      line = 'Study session · ' + (p.closed ? 'ended ' + fmtTime(p.endedAt || Date.now()) : 'started ' + fmtTime(p.startedAt));
+      line = 'Study session · ' + (p.closed ? 'ended ' + fmtTime(p.endedAt || Date.now()) : fmtTime(p.startedAt) + (p.budgetMin != null ? ' → ' + fmtTime(p.startedAt + p.budgetMin * 60000) : ' · started'));
       var parent = periodById(p.parentId);
       if (parent) line += ' · from ' + parent.name;
     } else {
@@ -1195,7 +1195,13 @@
     ui.editingPeriodId = editing ? editing.id : null;
     setText('#session-dialog-title', editing ? 'Edit session' : 'Start a study session');
     f.name.value = editing ? editing.name : 'Study session';
-    f.length.value = editing && editing.budgetMin != null ? fmt(editing.budgetMin) : '';
+    f.length.value = '';
+    f.until.value = '';
+    if (editing && editing.budgetMin != null) {
+      var endAt = new Date(editing.startedAt + editing.budgetMin * 60000);
+      f.until.value = pad(endAt.getHours()) + ':' + pad(endAt.getMinutes());
+    }
+    setText('#session-now', editing ? ' · started ' + fmtTime(editing.startedAt) : ' · ' + fmtTime(Date.now()));
     f.breaks.checked = editing ? editing.breaks : true;
     var week = editing ? null : currentWeek();
     var pickBox = $('#session-pick'), srcBox = $('#session-source');
@@ -1218,6 +1224,23 @@
     dlg.showModal();
   }
 
+  // The session's planned length in minutes from `from`: an "ends at" time wins, then a
+  // length ("2h", or "until 6pm" typed there), else null (Tempo estimates). Returns
+  // { min, endAt } or { error } for something unreadable.
+  function sessionEnd(f, from) {
+    var until = f.until.value, len = f.length.value.trim();
+    if (until) {
+      var at = TP.parseEndTime(until, from, true);
+      return at ? { min: (at - from) / 60000, endAt: at } : { error: 'Pick the time the session ends' };
+    }
+    if (!len) return { min: null };
+    var end = /[ap]\.?m\.?$|^(until|till|til|to|by)\b/i.test(len) ? TP.parseEndTime(len, from) : null;
+    if (end) return { min: (end - from) / 60000, endAt: end };
+    var d = parseDuration(len);
+    if (d == null || d <= 0) return { error: 'Enter an end time, or how long you have (e.g. 2h or 90m). Or leave both blank.' };
+    return { min: d, endAt: from + d * 60000 };
+  }
+
   function sessionPicks() {
     var f = $('#session-form');
     if (!f || !ui.sessionWeek || f.source.value !== 'week') return [];
@@ -1233,14 +1256,20 @@
     var picks = sessionPicks();
     var work = picks.reduce(function (s, t) { return s + remainingMin(t); }, 0);
     var breaks = f.breaks.checked ? TP.breaksFor(work) : 0;
-    var len = parseDuration(f.length.value);
+    var editing = ui.editingPeriodId && periodById(ui.editingPeriodId);
+    var from = editing ? editing.startedAt : Date.now();
+    var end = sessionEnd(f, from), len = end.min;
+    var span = end.endAt ? 'Now → ' + fmtTime(end.endAt) + (new Date(end.endAt).getDate() !== new Date(from).getDate() ? ' tomorrow' : '') + ' · ' + fmt(len) + '. ' : '';
+    if (editing) span = end.endAt ? 'Ends ' + fmtTime(end.endAt) + ' · ' + fmt(len) + ' in all. ' : '';
     var out;
-    if (ui.editingPeriodId) out = '';
-    else if (!picks.length) out = len ? 'A ' + fmt(len) + ' session. Add tasks after you start and Tempo shows if they fit.' : 'Add tasks after you start. Tempo estimates how long the session will take.';
+    if (end.error) out = end.error;
+    else if (editing) out = span;
+    else if (!picks.length) out = span + (len ? 'Add tasks after you start and Tempo shows if they fit.' : 'Add tasks after you start. Tempo estimates how long the session will take.');
     else {
-      out = picks.length + (picks.length === 1 ? ' task' : ' tasks') + ' · ' + fmt(work) + ' work' + (breaks ? ' + ' + fmt(breaks) + ' breaks' : '') +
-        ' ≈ done by ' + fmtTime(Date.now() + (work + breaks) * 60000);
-      if (len && work + breaks > len) out += ' · that’s ' + fmt(work + breaks - len) + ' more than you have';
+      out = span + picks.length + (picks.length === 1 ? ' task' : ' tasks') + ' · ' + fmt(work) + ' work' + (breaks ? ' + ' + fmt(breaks) + ' breaks' : '');
+      if (!len) out += ' ≈ done by ' + fmtTime(Date.now() + (work + breaks) * 60000);
+      else if (work + breaks > len) out += ' · that’s ' + fmt(work + breaks - len) + ' more than you have';
+      else out += ' · fits, with ' + fmt(len - work - breaks) + ' to spare';
     }
     setText('#session-sum', out);
   }
@@ -1248,9 +1277,10 @@
   function saveSessionDialog() {
     var f = $('#session-form');
     if (!f) return false;
-    var lenText = f.length.value.trim(), len = lenText ? parseDuration(lenText) : null;
-    if (lenText && (len == null || len <= 0)) { toast('Enter how long you have, e.g. 2h or 90m. Or leave it blank.'); return false; }
     var editing = ui.editingPeriodId && periodById(ui.editingPeriodId);
+    var end = sessionEnd(f, editing ? editing.startedAt : Date.now());
+    if (end.error) { toast(end.error); return false; }
+    var len = end.min;
     if (editing) {
       editing.name = f.name.value.trim() || 'Study session';
       editing.budgetMin = len;
@@ -1260,6 +1290,7 @@
     }
     stopTimer();
     var picks = sessionPicks(), now = Date.now();
+    if (end.endAt) len = (end.endAt - now) / 60000;   // count from the moment it actually starts
     var s = normalizePeriod({
       id: uid(), kind: 'session', name: f.name.value.trim() || 'Study session', start: iso(today()), end: iso(today()),
       budgetMin: len, breaks: f.breaks.checked, startedAt: now, closed: false,
@@ -1269,7 +1300,7 @@
     state.periods.push(s);
     state.activePeriodId = s.id;
     save(); render();
-    toast(picks.length ? 'Session started with ' + picks.length + (picks.length === 1 ? ' task' : ' tasks') : 'Session started. Tell Tempo what you’ll work on.');
+    toast((picks.length ? 'Session started with ' + picks.length + (picks.length === 1 ? ' task' : ' tasks') : 'Session started') + (end.endAt ? ' · until ' + fmtTime(end.endAt) : '') + (picks.length ? '' : '. Tell Tempo what you’ll work on.'));
     setTimeout(function () { var i = $('#dump-input'); if (i && !picks.length) i.focus(); }, 50);
     return true;
   }
@@ -1957,7 +1988,12 @@
     on('#task-delete', 'click', function () { var id = ui.editingTaskId; $('#task-dialog').close(); deleteTask(id); });
     on('#close-form', 'submit', function (e) { e.preventDefault(); if (saveCloseDialog()) $('#close-dialog').close(); });
     on('#session-form', 'submit', function (e) { e.preventDefault(); if (saveSessionDialog()) $('#session-dialog').close(); });
-    on('#session-form', 'input', updateSessionSummary);
+    on('#session-form', 'input', function (e) {
+      var f = e.currentTarget;
+      if (e.target.name === 'until' && e.target.value) f.length.value = '';
+      if (e.target.name === 'length' && e.target.value) f.until.value = '';
+      updateSessionSummary();
+    });
     on('#session-form', 'change', updateSessionSummary);
     on('#end-form', 'submit', function (e) { e.preventDefault(); endSession(); $('#end-dialog').close(); });
     on('#auth-form', 'submit', function (e) { e.preventDefault(); submitAuth(); });

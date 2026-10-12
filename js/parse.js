@@ -480,12 +480,29 @@
     return out;
   }
 
+  // "6pm", "6:30 pm", "until 18:30", "till 6" → the next time that clock time comes round
+  // (ms). A bare "6" means whichever of 6am/6pm comes next. is24 treats the value as 24-hour
+  // (what <input type="time"> gives). Returns null when it isn't a time.
+  function parseEndTime(str, now, is24) {
+    now = now || Date.now();
+    var s = String(str || '').trim().toLowerCase().replace(/^(?:until|till|til|to|by|ends?\s+at|at)\s+/, '').replace(/\./g, '');
+    var m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)?$/);
+    if (!m) return null;
+    var h = +m[1], min = m[2] ? +m[2] : 0, ap = m[3] ? m[3].charAt(0) : '';
+    if (h > 23 || min > 59 || (ap && (h < 1 || h > 12))) return null;
+    var at = function (hour) { var d = new Date(now); d.setHours(hour, min, 0, 0); if (d.getTime() <= now) d.setDate(d.getDate() + 1); return d.getTime(); };
+    if (ap) return at(ap === 'p' ? (h % 12) + 12 : h % 12);
+    if (is24 || h === 0 || h > 12) return at(h);
+    var a = at(h % 12), b = at((h % 12) + 12);   // ambiguous: the sooner of am/pm
+    return Math.min(a, b);
+  }
+
   // Breaks for a stretch of work: 10 minutes after every 50.
   function breaksFor(workMin) { return Math.floor(Math.max(0, workMin - 1) / 50) * 10; }
 
   var api = {
     CATS: CATS, parseDuration: parseDuration, parseDump: parseDump, parseOne: parseOne, classify: classify,
-    learn: learn, estimateFor: estimateFor, similarity: similarity, breaksFor: breaksFor, catName: catName,
+    learn: learn, estimateFor: estimateFor, parseEndTime: parseEndTime, similarity: similarity, breaksFor: breaksFor, catName: catName,
     fmt: fmt, iso: iso, parseISO: parseISO, today: today, addDays: addDays, capFirst: capFirst, pad: pad,
     wordsOf: wordsOf, stem: stem
   };
