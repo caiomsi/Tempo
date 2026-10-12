@@ -8,19 +8,17 @@ conventions.
 
 ## What it does
 
-- **Left panel (the clock):** a rounded-square analog face built by `buildChrono(svg)`,
-  styled after the macOS clock widget. It returns an `update(state)` fed by
-  `chronoState(m, cur)`.
-  - Ticks run out to the square's edges (`edgePoint`/`edgeTick`). Major ticks mark budget
-    units: hours, or minutes for anything up to 6h.
-  - Four bold numerals sit at the quarters of the budget (20 / 5 / 10 / 15 for a 20h week).
-  - Thick black hour and minute hands, and an orange (`--ch-accent`) second hand that ticks
-    once a second.
-  - Small `h:mm:ss` readout under the top numeral ("+h:mm OVER" past the budget).
-  - Two small task dials: a stopwatch for the current task, and % done against its estimate
-    (orange arc).
-  - Colours come from the `--ch-*` tokens (white face in light mode, graphite in dark).
-    `sv()` routes `var()` colours through `style`.
+- **Left panel (the clock):** a rounded-square face with **one pointer**, built by
+  `buildChrono(svg)`. It returns `update({ left, budget })`.
+  - The pointer starts at 12 and turns **clockwise** as time is used.
+  - An orange line along the square's edge grows from the top, follows the pointer, and
+    turns red past the budget.
+  - The only text on the face is the total length in minutes at the top ("120 MIN").
+  - `perimeterPoint` walks the rounded square. `trackTurn` converts the used fraction into
+    the pointer's angle so the pointer and the line end always line up.
+  - 60 ticks are spaced evenly along the edge.
+  - Colours come from `--ch-*` (white face in light mode, graphite in dark). `sv()` routes
+    `var()` colours through `style`.
   - Below it: the status badge, time left vs. work planned, the current task, pace,
     and estimate accuracy.
 - **Pop-out mini timer** (the button next to Edit, or `p`): in Chrome and Edge,
