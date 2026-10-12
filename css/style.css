@@ -496,6 +496,22 @@ kbd, code {
 .toast button { border: 0; background: none; color: var(--accent); font-weight: 600; padding: 0; }
 
 
+/* ---------- Clock-only mode ---------- */
+.clockmode {
+  position: fixed; inset: 0; z-index: 55;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+  padding: 24px var(--gutter); background: var(--bg);
+  animation: fade .25s ease;
+}
+.cm-chrono { width: min(84vmin, 760px); height: auto; aspect-ratio: 1; overflow: visible; filter: drop-shadow(0 18px 40px rgb(0 0 0 / .22)); }
+.cm-left { margin: 6px 0 0; font: 400 clamp(28px, 5vmin, 46px)/1 var(--f-display); font-variant-numeric: tabular-nums; }
+.cm-now { margin: 0; min-height: 1.4em; font-size: 15px; color: var(--ink-3); text-align: center; max-width: 60ch; }
+.cm-controls { display: flex; gap: 8px; margin-top: 6px; transition: opacity .4s; }
+.clockmode.is-idle { cursor: none; }
+.clockmode.is-idle .cm-controls, .clockmode.is-idle .cm-now { opacity: 0; }
+.cm-controls kbd { margin-left: 4px; }
+#clock { cursor: zoom-in; }
+
 /* ---------- Banner ---------- */
 .banner {
   display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;

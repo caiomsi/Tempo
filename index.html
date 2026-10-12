@@ -62,6 +62,8 @@
             <button type="button" data-action="edit-period" role="menuitem">Edit this…</button>
             <button type="button" data-action="close-period" role="menuitem">Close / end &amp; review…</button>
             <hr>
+            <button type="button" data-action="clock-mode" role="menuitem">Clock only (full screen)</button>
+            <hr>
             <button type="button" data-action="export" role="menuitem">Export backup (JSON)</button>
             <button type="button" data-action="import" role="menuitem">Import backup…</button>
             <button type="button" data-action="sample" role="menuitem">Load sample data</button>
@@ -102,6 +104,9 @@
             <h1 class="period-name" id="period-name"></h1>
           </div>
           <div class="head-btns">
+            <button class="icon-btn" type="button" data-action="clock-mode" aria-label="Clock only" title="Clock only (c)">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V5a1 1 0 0 1 1-1h4v2H6v3zm11-5h4a1 1 0 0 1 1 1v4h-2V6h-3zM4 15h2v3h3v2H5a1 1 0 0 1-1-1zm14 0h2v4a1 1 0 0 1-1 1h-4v-2h3z"/><circle cx="12" cy="12" r="3.2"/></svg>
+            </button>
             <button class="icon-btn pop-btn" id="pop-btn" type="button" aria-label="Pop out floating timer" title="Pop out timer (p)">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16a1 1 0 0 1 1 1v6h-2V7H5v10h6v2H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><rect x="13" y="13" width="9" height="7" rx="1.2"/></svg>
             </button>
@@ -165,6 +170,17 @@
       </section>
     </div>
   </main>
+
+  <!-- Clock-only mode -->
+  <section class="clockmode" id="clockmode" hidden role="dialog" aria-modal="true" aria-label="Clock">
+    <svg class="cm-chrono" id="cm-chrono" viewBox="0 0 220 220" role="img" aria-label="Time left"></svg>
+    <p class="cm-left" id="cm-left"></p>
+    <p class="cm-now" id="cm-now"></p>
+    <div class="cm-controls">
+      <button class="btn btn-primary btn-sm" type="button" id="cm-toggle">Start</button>
+      <button class="btn btn-sm" type="button" id="cm-exit">Exit <kbd>Esc</kbd></button>
+    </div>
+  </section>
 
   <!-- Focus mode -->
   <section class="focus" id="focus" hidden aria-modal="true" role="dialog" aria-labelledby="focus-title">
@@ -325,6 +341,7 @@
         <tr><td><kbd>s</kbd></td><td>Start a study session</td></tr>
         <tr><td><kbd>f</kbd></td><td>Focus on the top task</td></tr>
         <tr><td><kbd>/</kbd></td><td>Search</td></tr>
+        <tr><td><kbd>c</kbd></td><td>Clock only: full screen, just the time left</td></tr>
         <tr><td><kbd>p</kbd></td><td>Pop out a floating timer that stays on top of other apps</td></tr>
         <tr><td><kbd>t</kbd></td><td>Switch between light and dark mode</td></tr>
         <tr><td><kbd>?</kbd></td><td>This help</td></tr>

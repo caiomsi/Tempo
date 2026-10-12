@@ -26,6 +26,11 @@ conventions.
   Safari, `drawMiniCanvas` paints the timer onto a canvas, which floats as a
   video-PiP; its play/pause button toggles the task timer through `mediaSession`.
   The pop-out builds the same chronograph with `buildChrono`; the canvas fallback draws a simplified one.
+- **Clock-only mode** (the expand button by the clock, `c`, double-clicking the clock, or the
+  menu): a full-screen overlay `#clockmode` with its own `buildChrono` plus the time left.
+  - Controls fade after 2.5s idle, and it requests full screen plus a screen wake lock where
+    allowed.
+  - Esc, `c`, or leaving full screen closes it. `renderClockMode` runs from `renderClock`.
 - **Right panel ("board"):** a plain-language brain-dump input with dictation, and
   the tasks grouped by **category**.
 - The cutoff is computed globally. Open tasks are ranked by priority, then `order`,

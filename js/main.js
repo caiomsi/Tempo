@@ -524,6 +524,7 @@
       setText('#lg-work', fmt(m.remaining));
     }
     renderMini(p, m, cs, cur);
+    renderClockMode(p, m, cs, cur);
   }
 
   function renderNow(p, m) {
@@ -1446,6 +1447,53 @@
     }
   }
 
+  // ---------- Clock-only mode ----------
+  // Full screen, nothing but the chronograph and the time left. Controls fade when idle,
+  // and the screen is kept awake where the browser allows it.
+  var cm = { chrono: null, wake: null, idle: null };
+  function openClockMode() {
+    var box = $('#clockmode'), p = activePeriod();
+    if (!box || !p) return;
+    if (!cm.chrono) cm.chrono = buildChrono($('#cm-chrono'));
+    box.hidden = false;
+    document.body.style.overflow = 'hidden';
+    try { if (document.documentElement.requestFullscreen && !document.fullscreenElement) document.documentElement.requestFullscreen().then(function () { cm.fs = true; }).catch(function () {}); } catch (e) { /* optional */ }
+    try { if (navigator.wakeLock) navigator.wakeLock.request('screen').then(function (l) { cm.wake = l; }).catch(function () {}); } catch (e) { /* optional */ }
+    clockModeActivity();
+    render();
+  }
+  function closeClockMode() {
+    var box = $('#clockmode');
+    if (!box || box.hidden) return;
+    box.hidden = true;
+    document.body.style.overflow = '';
+    cm.fs = false;
+    try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(function () {}); } catch (e) { /* ignore */ }
+    if (cm.wake) { cm.wake.release().catch(function () {}); cm.wake = null; }
+    clearTimeout(cm.idle);
+  }
+  function clockModeOpen() { var b = $('#clockmode'); return !!b && !b.hidden; }
+  function clockModeActivity() {
+    var box = $('#clockmode');
+    if (!box) return;
+    box.classList.remove('is-idle');
+    clearTimeout(cm.idle);
+    cm.idle = setTimeout(function () { box.classList.add('is-idle'); }, 2500);
+  }
+  function renderClockMode(p, m, cs, cur) {
+    if (!cm.chrono || !clockModeOpen()) return;
+    cm.chrono(cs);
+    var over = m.left < 0;
+    var text = m.session && m.auto ? (m.open ? fmt(m.need) + ' to finish' : 'All done')
+      : over ? fmt(-m.left) + ' over' : fmt(m.left) + ' left';
+    setText('#cm-left', text);
+    setText('#cm-now', cur ? (cur.running ? 'Working on ' : 'Up next: ') + cur.task.title : '');
+    var btn = $('#cm-toggle');
+    if (btn) { btn.textContent = cur && cur.running ? 'Pause' : 'Start'; btn.disabled = !cur; }
+    var svg = $('#cm-chrono');
+    if (svg) svg.setAttribute('aria-label', text);
+  }
+
   // ---------- Focus mode ----------
   function openFocus(id) {
     var t = id ? taskById(id) : null;
@@ -1750,6 +1798,7 @@
     }
     else if (action === 'edit-session') { var s = activePeriod(); if (s && isSession(s)) openSessionDialog(s); }
     else if (action === 'close-period') { if (activePeriod()) openCloseDialog(); else toast('Nothing to close'); }
+    else if (action === 'clock-mode') openClockMode();
     else if (action === 'export') exportJSON();
     else if (action === 'import') { var inp = $('#import-file'); if (inp) inp.click(); }
     else if (action === 'sample') loadSample();
@@ -1887,6 +1936,13 @@
     on('#auth-form', 'submit', function (e) { e.preventDefault(); submitAuth(); });
     on('#import-file', 'change', function (e) { var imp = e.target; if (imp.files && imp.files[0]) importJSON(imp.files[0]); imp.value = ''; });
 
+    on('#cm-exit', 'click', closeClockMode);
+    on('#cm-toggle', 'click', function () { var p = activePeriod(), cur = p && currentTask(p); if (cur) toggleTimer(cur.task.id); clockModeActivity(); });
+    on('#clockmode', 'mousemove', clockModeActivity);
+    on('#clockmode', 'touchstart', clockModeActivity);
+    on('#clock', 'dblclick', openClockMode);
+    // In full screen the browser takes Esc to leave it; leaving full screen also leaves clock mode.
+    document.addEventListener('fullscreenchange', function () { if (!document.fullscreenElement && cm.fs) { cm.fs = false; closeClockMode(); } });
     on('#focus-toggle', 'click', function () { if (ui.pomo && ui.pomo.phase === 'break') ui.pomo = null; focusToggle(); });
     on('#focus-done', 'click', function () { var id = ui.focusId; closeFocus(); setDone(id, true); });
     on('#focus-exit', 'click', closeFocus);
@@ -1902,6 +1958,12 @@
 
     document.addEventListener('keydown', function (e) {
       var focusOpen = !!ui.focusId;
+      if (clockModeOpen()) {
+        if (e.key === 'Escape' || e.key === 'c') { e.preventDefault(); closeClockMode(); }
+        else if (e.key === ' ') { e.preventDefault(); var cp = activePeriod(), cc = cp && currentTask(cp); if (cc) toggleTimer(cc.task.id); }
+        clockModeActivity();
+        return;
+      }
       if (e.key === 'Escape' && focusOpen) { closeFocus(); return; }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       var tag = (e.target.tagName || '').toLowerCase();
@@ -1917,6 +1979,7 @@
       else if (e.key === '/' && p) { e.preventDefault(); var s = $('#search'); if (s) s.focus(); }
       else if (e.key === 'f' && p) { e.preventDefault(); openFocus(); }
       else if (e.key === 'p' && p) togglePopout();
+      else if (e.key === 'c' && p) openClockMode();
       else if (e.key === 't') cycleTheme();
       else if (e.key === '?') { var h = $('#help-dialog'); if (h) h.showModal(); }
     });
@@ -1924,6 +1987,7 @@
     // Coming back to the tab: the day may have changed and another device may have saved.
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) return;
+      if (clockModeOpen() && navigator.wakeLock && !cm.wake) navigator.wakeLock.request('screen').then(function (l) { cm.wake = l; }).catch(function () {});
       render();
       if (window.TempoSync && TempoSync.user) TempoSync.pull();
     });
@@ -1948,6 +2012,7 @@
   setInterval(tick, 1000);
   setInterval(function () { if (state.running && !ui.focusId) render(); }, 30000);
   // Sessions with a set length count down in real time, timer or not.
+  // (Clock-only mode is redrawn by tick() and this loop through renderClock.)
   setInterval(function () { var p = activePeriod(); if (p && isSession(p) && !p.closed && !state.running) renderClock(p, metrics(p)); }, 1000);
   tick();
 })();
