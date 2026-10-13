@@ -11,9 +11,9 @@ conventions.
 - **Left panel (the clock):** a rounded-square face with **one pointer**, built by
   `buildChrono(svg)`. It returns `update({ left, budget })`.
   - The pointer starts at 12 and turns **clockwise** as time is used.
-  - An orange line along the square's edge grows from the top, follows the pointer, and
-    turns red past the budget.
-  - The only text on the face is the total length in minutes at the top ("120 MIN").
+  - An orange (`--ch-accent`) line along the square's edge grows from the top, follows the
+    pointer, and turns red past the budget.
+  - The face has no text and the pointer has no tip dot, by Caio's request.
   - `perimeterPoint` walks the rounded square. `trackTurn` converts the used fraction into
     the pointer's angle so the pointer and the line end always line up.
   - 60 ticks are spaced evenly along the edge.

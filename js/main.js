@@ -378,7 +378,6 @@
 
   // Rounded-square face with ONE pointer. It starts at the top and turns clockwise as time
   // is used; a line along the square's edge grows with it and ends where the pointer points.
-  // The only number is the total length, in minutes, at the top.
   var SQ = { half: 104, radius: 46 };          // face: square from 6 to 214 in a 220 viewBox
   var TRACK = { half: 99, radius: 41 };        // progress line, just inside the face edge
 
@@ -447,11 +446,8 @@
     var d = roundedSquarePath(cx, cy, TRACK.half, TRACK.radius);
     sv(svg, 'path', { d: d, fill: 'none', stroke: CH.sub, 'stroke-width': 5 });
     var progress = sv(svg, 'path', { d: d, fill: 'none', stroke: CH.accent, 'stroke-width': 5, 'stroke-linecap': 'round', pathLength: 100, 'stroke-dasharray': '0 100' });
-    var total = sv(svg, 'text', { x: cx, y: cy - 62, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-family': F_UI, 'font-size': 24, 'font-weight': 700, fill: CH.ink }, '');
-    sv(svg, 'text', { x: cx, y: cy - 45, 'text-anchor': 'middle', 'font-family': F_MONO, 'font-size': 5.2, 'letter-spacing': 1.4, fill: CH.dim }, 'MIN');
     var pointer = svHand(svg, cx, cy, function (g) {
       sv(g, 'line', { x1: cx, y1: cy + 12, x2: cx, y2: cy - 84, stroke: CH.ink, 'stroke-width': 4.4, 'stroke-linecap': 'round' });
-      sv(g, 'circle', { cx: cx, cy: cy - 84, r: 3.4, fill: CH.accent });
     });
     sv(svg, 'circle', { cx: cx, cy: cy, r: 6, fill: CH.ink });
     sv(svg, 'circle', { cx: cx, cy: cy, r: 2.2, fill: CH.face });
@@ -459,7 +455,6 @@
     // s: { left (sec, may be negative), budget (sec) }
     return function update(s) {
       var budget = Math.max(s.budget, 1), left = Math.max(s.left, 0);
-      total.textContent = String(Math.round(budget / 60));
       var used = Math.min(Math.max(1 - left / budget, 0), 1);       // grows clockwise from 0
       progress.setAttribute('stroke-dasharray', (used * 100).toFixed(3) + ' 100');
       progress.setAttribute('style', 'stroke:' + (s.left < 0 ? 'var(--bad)' : CH.accent));
@@ -1446,8 +1441,7 @@
     x.beginPath(); x.lineWidth = 6; x.lineCap = 'round'; x.strokeStyle = C.ink;
     x.moveTo(cx - 12 * k * Math.sin(a), cy + 12 * k * Math.cos(a)); x.lineTo(cx + 84 * k * Math.sin(a), cy - 84 * k * Math.cos(a)); x.stroke();
     x.beginPath(); x.arc(cx, cy, 7, 0, 2 * Math.PI); x.fillStyle = C.ink; x.fill();
-    x.fillStyle = C.ink; x.textAlign = 'center'; x.textBaseline = 'middle'; x.font = '700 30px Geist, system-ui, sans-serif';
-    x.fillText(String(Math.round(budget / 60)), cx, cy - 62 * k);
+    x.textBaseline = 'middle';
     var L = Math.max(cs.left, 0), whole = Math.floor(L), ov = Math.ceil(-cs.left);
     x.textAlign = 'left'; x.fillStyle = C.ink; x.font = '500 44px "Geist Mono", monospace';
     x.fillText(cs.left < 0 ? '+' + Math.floor(ov / 3600) + ':' + pad(Math.floor(ov / 60) % 60) : Math.floor(whole / 3600) + ':' + pad(Math.floor(whole / 60) % 60) + ':' + pad(whole % 60), 310, 78);
