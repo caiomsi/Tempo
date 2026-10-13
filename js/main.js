@@ -341,16 +341,14 @@
     if (ses) ses.hidden = isSession(p);
   }
 
-  // ---------- The chronograph ----------
-  // Big dial: time left (hour hand on the budget scale; minutes scale for short sessions),
-  // minute hand, ticking second hand, exact readout window. Left sub-dial: stopwatch for the
-  // current task. Right sub-dial: how complete that task is against its estimate.
-  // Built with the target document's own createElementNS so the pop-out window can reuse it.
+  // ---------- The clock ----------
+  // The original Tempo ring: a thin accent ring that empties as time is used, with the
+  // countdown (H:MM:SS) in the middle. Built with the target document's own createElementNS
+  // so the pop-out window and clock-only mode reuse it.
   var SVGNS = 'http://www.w3.org/2000/svg';
-  // Colours come from CSS tokens (--ch-*) so the watch has a light and a dark face.
-  var CH = { face: 'var(--ch-face)', bezel: 'var(--ch-bezel)', sub: 'var(--ch-sub)', subLine: 'var(--ch-subline)', ink: 'var(--ch-ink)', dim: 'var(--ch-dim)', accent: 'var(--ch-accent)' };
   var F_MONO = 'Geist Mono, ui-monospace, monospace';
-  var F_UI = 'Geist, -apple-system, system-ui, sans-serif';
+  var DIAL = { cx: 110, cy: 110, r: 96 };
+  var DIAL_LEN = 2 * Math.PI * DIAL.r;
 
   function sv(parent, tag, attrs, text) {
     var n = (parent.ownerDocument || document).createElementNS(SVGNS, tag), style = '';
@@ -364,109 +362,36 @@
     parent.appendChild(n);
     return n;
   }
-  function svHand(parent, cx, cy, draw) {
-    var g = sv(parent, 'g', { class: 'ch-hand' });
-    draw(g);
-    var last = null;
-    return function (turn) {
-      var deg = (turn * 360).toFixed(2);
-      if (deg === last) return;
-      last = deg;
-      g.setAttribute('transform', 'rotate(' + deg + ' ' + cx + ' ' + cy + ')');
-    };
-  }
-
-  // Rounded-square face with ONE pointer. It starts at the top and turns clockwise as time
-  // is used; a line along the square's edge grows with it and ends where the pointer points.
-  var SQ = { half: 104, radius: 46 };          // face: square from 6 to 214 in a 220 viewBox
-  var TRACK = { half: 99, radius: 41 };        // progress line, just inside the face edge
-
-  // Point at fraction f (0..1) of the way round a rounded square, clockwise from top centre.
-  function perimeterPoint(f, cx, cy, half, r) {
-    var k = half - r, q = Math.PI * r / 2;
-    var segs = [k, q, 2 * k, q, 2 * k, q, 2 * k, q, k];
-    var total = 8 * k + 4 * q, d = ((f % 1) + 1) % 1 * total;
-    var corners = [[k, -k, -Math.PI / 2], [k, k, 0], [-k, k, Math.PI / 2], [-k, -k, Math.PI]];
-    for (var i = 0; i < segs.length; i++) {
-      if (d > segs[i] && i < segs.length - 1) { d -= segs[i]; continue; }
-      var t = segs[i] ? d / segs[i] : 0;
-      switch (i) {
-        case 0: return [cx + k * t, cy - half];
-        case 2: return [cx + half, cy - k + 2 * k * t];
-        case 4: return [cx + k - 2 * k * t, cy + half];
-        case 6: return [cx - half, cy + k - 2 * k * t];
-        case 8: return [cx - k + k * t, cy - half];
-        default:
-          var c = corners[(i - 1) / 2], a = c[2] + t * Math.PI / 2;
-          return [cx + c[0] + r * Math.cos(a), cy + c[1] + r * Math.sin(a)];
-      }
-    }
-    return [cx, cy - half];
-  }
-  function roundedSquarePath(cx, cy, half, r) {
-    var L = cx - half, T = cy - half, R = cx + half, B = cy + half;
-    return 'M' + cx + ' ' + T + ' H' + (R - r) + ' A' + r + ' ' + r + ' 0 0 1 ' + R + ' ' + (T + r) +
-      ' V' + (B - r) + ' A' + r + ' ' + r + ' 0 0 1 ' + (R - r) + ' ' + B +
-      ' H' + (L + r) + ' A' + r + ' ' + r + ' 0 0 1 ' + L + ' ' + (B - r) +
-      ' V' + (T + r) + ' A' + r + ' ' + r + ' 0 0 1 ' + (L + r) + ' ' + T + ' Z';
-  }
-  // Clock turn (0 = 12 o'clock, clockwise) of the point at fraction f round the track.
-  function trackTurn(f, cx, cy) {
-    var p = perimeterPoint(f, cx, cy, TRACK.half, TRACK.radius);
-    var t = Math.atan2(p[0] - cx, -(p[1] - cy)) / (2 * Math.PI);
-    return t < 0 ? t + 1 : t;
-  }
-  // Kept for the Safari canvas fallback: where a ray at `turn` meets the face edge.
-  function edgePoint(cx, cy, turn) {
-    var a = turn * 2 * Math.PI, dx = Math.sin(a), dy = -Math.cos(a);
-    var H = SQ.half, R = SQ.radius, k = H - R;
-    var t = H / Math.max(Math.abs(dx), Math.abs(dy));
-    var px = dx * t, py = dy * t;
-    if (Math.abs(px) > k && Math.abs(py) > k) {
-      var ccx = px > 0 ? k : -k, ccy = py > 0 ? k : -k;
-      var b = -2 * (dx * ccx + dy * ccy), c = ccx * ccx + ccy * ccy - R * R;
-      t = (-b + Math.sqrt(Math.max(b * b - 4 * c, 0))) / 2;
-    }
-    return { x: cx + dx * t, y: cy + dy * t, dx: dx, dy: dy };
-  }
 
   function buildChrono(svg) {
     while (svg.firstChild) svg.removeChild(svg.firstChild);
-    var cx = 110, cy = 110;
-    sv(svg, 'rect', { x: 6, y: 6, width: 208, height: 208, rx: SQ.radius, fill: CH.face, stroke: CH.subLine, 'stroke-width': .6 });
-    // 60 ticks spaced evenly along the edge (so they line up with the progress line).
-    var ticks = sv(svg, 'g', {});
-    for (var i = 0; i < 60; i++) {
-      var p = perimeterPoint(i / 60, cx, cy, 92, 34), dx = p[0] - cx, dy = p[1] - cy, n = Math.sqrt(dx * dx + dy * dy);
-      var major = i % 5 === 0, len = major ? 9 : 6;
-      sv(ticks, 'line', { x1: (p[0] - dx / n * len).toFixed(2), y1: (p[1] - dy / n * len).toFixed(2), x2: p[0].toFixed(2), y2: p[1].toFixed(2),
-        stroke: major ? CH.ink : CH.dim, 'stroke-width': major ? 2 : 1, 'stroke-linecap': 'round' });
-    }
-    // Progress line: faint full track, then the used part from the top round to the pointer.
-    var d = roundedSquarePath(cx, cy, TRACK.half, TRACK.radius);
-    sv(svg, 'path', { d: d, fill: 'none', stroke: CH.sub, 'stroke-width': 5 });
-    var progress = sv(svg, 'path', { d: d, fill: 'none', stroke: CH.accent, 'stroke-width': 5, 'stroke-linecap': 'round', pathLength: 100, 'stroke-dasharray': '0 100' });
-    var pointer = svHand(svg, cx, cy, function (g) {
-      sv(g, 'line', { x1: cx, y1: cy + 12, x2: cx, y2: cy - 84, stroke: CH.ink, 'stroke-width': 4.4, 'stroke-linecap': 'round' });
-    });
-    sv(svg, 'circle', { cx: cx, cy: cy, r: 6, fill: CH.ink });
-    sv(svg, 'circle', { cx: cx, cy: cy, r: 2.2, fill: CH.face });
+    var cx = DIAL.cx, cy = DIAL.cy;
+    sv(svg, 'circle', { cx: cx, cy: cy, r: DIAL.r, fill: 'none', stroke: 'var(--line)', 'stroke-width': 10 });
+    var ring = sv(svg, 'circle', { class: 'dial-ring', cx: cx, cy: cy, r: DIAL.r, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 10,
+      'stroke-linecap': 'round', 'stroke-dasharray': DIAL_LEN.toFixed(2), 'stroke-dashoffset': 0, transform: 'rotate(-90 ' + cx + ' ' + cy + ')' });
+    var label = sv(svg, 'text', { x: cx, y: 82, 'text-anchor': 'middle', 'font-family': F_MONO, 'font-size': 9.5, 'font-weight': 500, 'letter-spacing': '.06em', fill: 'var(--ink-3)' }, 'LEFT TO WORK');
+    var time = sv(svg, 'text', { x: cx, y: 124, 'text-anchor': 'middle', 'font-family': F_MONO, 'font-size': 36, 'letter-spacing': '-1', fill: 'var(--ink)' }, '0:00:00');
+    var sub = sv(svg, 'text', { x: cx, y: 150, 'text-anchor': 'middle', 'font-family': 'Geist, system-ui, sans-serif', 'font-size': 11.5, fill: 'var(--ink-2)' }, '');
 
-    // s: { left (sec, may be negative), budget (sec) }
+    // s: { left (sec, may be negative), budget (sec), label, sub }
     return function update(s) {
-      var budget = Math.max(s.budget, 1), left = Math.max(s.left, 0);
-      var used = Math.min(Math.max(1 - left / budget, 0), 1);       // grows clockwise from 0
-      progress.setAttribute('stroke-dasharray', (used * 100).toFixed(3) + ' 100');
-      progress.setAttribute('style', 'stroke:' + (s.left < 0 ? 'var(--bad)' : CH.accent));
-      pointer(used >= 1 ? 1 : trackTurn(used, cx, cy));
+      var over = s.left < 0;
+      var frac = s.budget > 0 ? Math.min(Math.max(s.left / s.budget, 0), 1) : 0;
+      ring.setAttribute('stroke-dashoffset', (DIAL_LEN * (1 - frac)).toFixed(2));
+      ring.setAttribute('style', 'stroke:' + (over ? 'var(--bad)' : 'var(--accent)'));
+      label.textContent = over ? 'OVER BUDGET' : (s.label || 'LEFT TO WORK');
+      time.textContent = (over ? '+' : '') + fmtClock(Math.abs(s.left) * 1000);
+      time.setAttribute('style', 'fill:' + (over ? 'var(--bad)' : 'var(--ink)'));
+      sub.textContent = s.sub || '';
     };
   }
 
   function chronoState(p, m, cur) {
-    var label = null;
-    if (m.session) label = (m.auto ? 'TO FINISH' : 'SESSION LEFT') + (m.budget <= 360 ? ' · MIN' : ' · HRS');
+    var label = m.session ? (m.auto ? 'TO FINISH' : 'SESSION LEFT') : null;
+    var sub = m.session && m.auto ? fmt(m.remaining) + ' work' + (m.breaksLeft ? ' + ' + fmt(m.breaksLeft) + ' breaks' : '')
+      : 'of ' + fmt(m.budget) + ' · ' + fmt(m.used) + ' worked';
     return {
-      left: m.left * 60, budget: m.budget * 60, label: label,
+      left: m.left * 60, budget: m.budget * 60, label: label, sub: sub,
       task: cur ? { spent: loggedMs(cur.task) / 1000, est: cur.task.estMin * 60 } : null
     };
   }
@@ -490,13 +415,11 @@
     svg.setAttribute('aria-label', (over ? fmt(-m.left) + ' over' : fmt(m.left) + (m.session && m.auto ? ' to finish' : ' left')) +
       (cur ? '. ' + (cur.running ? 'Working on ' : 'Up next: ') + cur.task.title : ''));
     if (m.session) {
-      setText('#clock-sub', m.auto ? fmt(m.remaining) + ' work' + (m.breaksLeft ? ' + ' + fmt(m.breaksLeft) + ' breaks' : '') : 'of ' + fmt(m.budget) + ' · ' + fmt(m.used) + ' worked');
       setText('#lg-left-label', m.auto ? 'Work left' : 'Session ends');
       setText('#lg-left', m.auto ? fmt(m.remaining) : fmtTime(m.endsAt));
       setText('#lg-work-label', 'Worked');
       setText('#lg-work', fmt(m.used));
     } else {
-      setText('#clock-sub', 'of ' + fmt(m.budget) + ' · ' + fmt(m.used) + ' worked');
       setText('#lg-left-label', 'Time left');
       setText('#lg-left', m.left >= 0 ? fmt(m.left) : '−' + fmt(-m.left));
       setText('#lg-work-label', 'Work planned');
@@ -1418,29 +1341,17 @@
     }
     if (mini.canvas) drawMiniCanvas(cs, cur);
   }
-  // Safari fallback: the same chronograph, painted onto a canvas that floats as a video.
+  // Safari fallback: the same ring, painted onto a canvas that floats as a video.
   function drawMiniCanvas(cs, cur) {
     var c = mini.canvas, x = c.getContext('2d'), st = getComputedStyle(document.documentElement);
     var tok = function (n) { return st.getPropertyValue(n).trim(); };
-    var C = { face: tok('--ch-face'), ink: tok('--ch-ink'), dim: tok('--ch-dim'), accent: tok('--ch-accent'), sub: tok('--ch-sub'), bg: tok('--surface'), bad: tok('--bad') };
-    var W = c.width, H = c.height, cx = 150, cy = H / 2, k = 136 / 104;
+    var C = { ink: tok('--ink'), dim: tok('--ink-3'), accent: tok('--accent'), line: tok('--line'), bg: tok('--surface'), bad: tok('--bad') };
+    var W = c.width, H = c.height, cx = 150, cy = H / 2, r = 118;
     x.fillStyle = C.bg; x.fillRect(0, 0, W, H);
-    x.beginPath(); x.roundRect(cx - 104 * k, cy - 104 * k, 208 * k, 208 * k, SQ.radius * k); x.fillStyle = C.face; x.fill();
-    var budget = Math.max(cs.budget, 1), used = Math.min(Math.max(1 - Math.max(cs.left, 0) / budget, 0), 1);
-    var trace = function (upTo, color) {
-      x.beginPath(); x.lineWidth = 6; x.lineCap = 'round'; x.strokeStyle = color;
-      for (var i = 0; i <= 200 * upTo; i++) {
-        var p = perimeterPoint(i / 200, 0, 0, TRACK.half, TRACK.radius);
-        if (i === 0) x.moveTo(cx + p[0] * k, cy + p[1] * k); else x.lineTo(cx + p[0] * k, cy + p[1] * k);
-      }
-      x.stroke();
-    };
-    trace(1, C.sub);
-    if (used > 0) trace(used, cs.left < 0 ? C.bad : C.accent);
-    var a = (used >= 1 ? 1 : trackTurn(used, 0, 0)) * 2 * Math.PI;
-    x.beginPath(); x.lineWidth = 6; x.lineCap = 'round'; x.strokeStyle = C.ink;
-    x.moveTo(cx - 12 * k * Math.sin(a), cy + 12 * k * Math.cos(a)); x.lineTo(cx + 84 * k * Math.sin(a), cy - 84 * k * Math.cos(a)); x.stroke();
-    x.beginPath(); x.arc(cx, cy, 7, 0, 2 * Math.PI); x.fillStyle = C.ink; x.fill();
+    x.lineWidth = 12; x.lineCap = 'round';
+    x.beginPath(); x.arc(cx, cy, r, 0, 2 * Math.PI); x.strokeStyle = C.line; x.stroke();
+    var frac = cs.budget > 0 ? Math.min(Math.max(cs.left / cs.budget, 0), 1) : 0;
+    if (frac > 0) { x.beginPath(); x.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + frac * 2 * Math.PI); x.strokeStyle = C.accent; x.stroke(); }
     x.textBaseline = 'middle';
     var L = Math.max(cs.left, 0), whole = Math.floor(L), ov = Math.ceil(-cs.left);
     x.textAlign = 'left'; x.fillStyle = C.ink; x.font = '500 44px "Geist Mono", monospace';

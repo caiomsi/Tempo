@@ -8,17 +8,13 @@ conventions.
 
 ## What it does
 
-- **Left panel (the clock):** a rounded-square face with **one pointer**, built by
-  `buildChrono(svg)`. It returns `update({ left, budget })`.
-  - The pointer starts at 12 and turns **clockwise** as time is used.
-  - An orange (`--ch-accent`) line along the square's edge grows from the top, follows the
-    pointer, and turns red past the budget.
-  - The face has no text and the pointer has no tip dot, by Caio's request.
-  - `perimeterPoint` walks the rounded square. `trackTurn` converts the used fraction into
-    the pointer's angle so the pointer and the line end always line up.
-  - 60 ticks are spaced evenly along the edge.
-  - Colours come from `--ch-*` (white face in light mode, graphite in dark). `sv()` routes
-    `var()` colours through `style`.
+- **Left panel (the clock):** the original Tempo ring, built by `buildChrono(svg)`, which
+  returns `update({ left, budget, label, sub })`. Caio asked to return to it on 2026-10-13
+  after trying a chronograph, a square macOS-style face and a one-pointer face.
+  - A thin `--accent` ring on a `--line` track empties as time is used, and turns `--bad` past the budget.
+  - Inside it: the label (LEFT TO WORK / SESSION LEFT / TO FINISH / OVER BUDGET), the
+    H:MM:SS countdown, and "of 20h · 3h worked".
+  - The ring breathes while a task timer runs. `sv()` routes `var()` colours through `style`.
   - Below it: the status badge, time left vs. work planned, the current task, pace,
     and estimate accuracy.
 - **Pop-out mini timer** (the button next to Edit, or `p`): in Chrome and Edge,
@@ -26,7 +22,7 @@ conventions.
   `MINI_HTML`, `.mini*` CSS) with the dial plus Start/Pause/Done. Elsewhere, such as
   Safari, `drawMiniCanvas` paints the timer onto a canvas, which floats as a
   video-PiP; its play/pause button toggles the task timer through `mediaSession`.
-  The pop-out builds the same chronograph with `buildChrono`; the canvas fallback draws a simplified one.
+  The pop-out builds the same ring with `buildChrono`; the canvas fallback paints the ring itself.
 - **Clock-only mode** (the expand button by the clock, `c`, double-clicking the clock, or the
   menu): a full-screen overlay `#clockmode` with its own `buildChrono` plus the time left.
   - Controls fade after 2.5s idle, and it requests full screen plus a screen wake lock where
@@ -79,7 +75,6 @@ Periods have `kind: 'week' | 'session'`.
 - `sessionMetrics()` counts only logs after `startedAt`.
   - With a set length, the session counts down in real time.
   - Auto sessions show the time left to finish.
-- The chronograph uses a minutes scale for anything up to 6 hours.
 
 ## Sync
 
