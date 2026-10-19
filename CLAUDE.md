@@ -8,13 +8,17 @@ conventions.
 
 ## What it does
 
-- **Left panel (the clock):** the original Tempo ring, built by `buildChrono(svg)`, which
-  returns `update({ left, budget, label, sub })`. Caio asked to return to it on 2026-10-13
-  after trying a chronograph, a square macOS-style face and a one-pointer face.
-  - A thin `--accent` ring on a `--line` track empties as time is used, and turns `--bad` past the budget.
-  - Inside it: the label (LEFT TO WORK / SESSION LEFT / TO FINISH / OVER BUDGET), the
-    H:MM:SS countdown, and "of 20h · 3h worked".
-  - The ring breathes while a task timer runs. `sv()` routes `var()` colours through `style`.
+- **Left panel (the clock):** the face comes from `js/clocks.js` (`TempoClocks`), which holds 19
+  faces (one dot a minute, ring, red disc, flip clock, hourglass, ruler, nixie, LCD, and others).
+  `TempoClocks.mount(host, id)` returns `update({ left, budget, label, sub, running })`.
+  - **Clock style** (in the ⋯ menu) picks a face separately for the main panel, clock-only mode and
+    the pop-out. The picks are saved in `state.settings.clocks` (per device). The default everywhere
+    is `dots`, by Caio's choice (2026-10-19).
+  - Faces whose layout depends on the budget (dots, disc, ruler, pomodoro, kitchen) rebuild
+    when the budget changes. Dots adapt their unit (1 dot = 1/2/5/10… min) to stay ≤ 144.
+  - `live` faces (dots, wall, glass) redraw every frame on their own window's rAF.
+  - HTML-based faces size themselves with `cqw` (the host is a size container), so they fit
+    any box from the 150px picker tiles to full screen.
   - Below it: the status badge, time left vs. work planned, the current task, pace,
     and estimate accuracy.
 - **Pop-out mini timer** (the button next to Edit, or `p`): in Chrome and Edge,
@@ -22,7 +26,7 @@ conventions.
   `MINI_HTML`, `.mini*` CSS) with the dial plus Start/Pause/Done. Elsewhere, such as
   Safari, `drawMiniCanvas` paints the timer onto a canvas, which floats as a
   video-PiP; its play/pause button toggles the task timer through `mediaSession`.
-  The pop-out builds the same ring with `buildChrono`; the canvas fallback paints the ring itself.
+  The pop-out mounts its chosen face; the Safari canvas fallback always paints the ring.
 - **Clock-only mode** (the expand button by the clock, `c`, double-clicking the clock, or the
   menu): a full-screen overlay `#clockmode` with its own `buildChrono` plus the time left.
   - Controls fade after 2.5s idle, and it requests full screen plus a screen wake lock where
@@ -49,6 +53,7 @@ Speech API) needs `localhost` or https, not `file://`.
 index.html            shell: clock panel, board, focus overlay, dialogs (week, task, close, session, end-session, auth, help)
 css/style.css         paper/ink tokens + per-category colours (--c-*) + chronograph tokens (--ch-*), light/dark
 js/parse.js           TempoParse: plain language → tasks, categorizer, time estimates. Pure, no DOM (Node-testable)
+js/clocks.js          TempoClocks: the clock faces + mount()
 js/sync.js            TempoSync: Supabase auth + saving + mergeDocs (pure, Node-testable)
 js/main.js            the app (one IIFE): state, render, chronograph, sessions, preview, pop-out, focus
 test/*.test.js        plain-Node tests (assert); .github/workflows/test.yml runs them on push
@@ -129,7 +134,7 @@ Periods have `kind: 'week' | 'session'`.
   tasks: [{ id, periodId, title, estMin, priority, due, category, notes, done, carried,
             doneAt, order, logs: [{ start, end }] }],
   running: { taskId, start } | null,  learn: { word: { Category: weight } },
-  settings: { theme, pomodoro } }
+  settings: { theme, pomodoro, clocks: { main, mode, pop } } }
 ```
 
 `normalize()` migrates the old `tag` field to `category`. Closing a period copies the

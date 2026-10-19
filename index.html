@@ -63,6 +63,7 @@
             <button type="button" data-action="close-period" role="menuitem">Close / end &amp; review…</button>
             <hr>
             <button type="button" data-action="clock-mode" role="menuitem">Clock only (full screen)</button>
+            <button type="button" data-action="clock-style" role="menuitem">Clock style…</button>
             <hr>
             <button type="button" data-action="export" role="menuitem">Export backup (JSON)</button>
             <button type="button" data-action="import" role="menuitem">Import backup…</button>
@@ -114,9 +115,7 @@
           </div>
         </div>
 
-        <div class="chrono" id="clock">
-          <svg id="chrono" viewBox="0 0 220 220" role="img" aria-label="Time left to work"></svg>
-        </div>
+        <div class="chrono" id="clock" role="img" aria-label="Time left to work"></div>
 
         <div class="clock-meta">
           <span class="status-pill" id="sum-status"></span>
@@ -172,7 +171,7 @@
 
   <!-- Clock-only mode -->
   <section class="clockmode" id="clockmode" hidden role="dialog" aria-modal="true" aria-label="Clock">
-    <svg class="cm-chrono" id="cm-chrono" viewBox="0 0 220 220" role="img" aria-label="Time left"></svg>
+    <div class="cm-chrono" id="cm-chrono" role="img" aria-label="Time left"></div>
     <p class="cm-now" id="cm-now"></p>
     <div class="cm-controls">
       <button class="btn btn-primary btn-sm" type="button" id="cm-toggle">Start</button>
@@ -335,6 +334,19 @@
     </form>
   </dialog>
 
+  <!-- Clock style dialog -->
+  <dialog class="dialog dialog-wide" id="clock-dialog">
+    <div>
+      <h2 class="dialog-title">Clock style</h2>
+      <p class="hint">Pick a clock for each place. They all show the same time left.</p>
+      <div class="seg place-seg" role="tablist" aria-label="Where the clock appears" id="clock-places"></div>
+      <div class="clock-grid" id="clock-grid" role="listbox" aria-label="Clock faces"></div>
+      <div class="dialog-actions">
+        <button class="btn btn-primary" type="button" data-close>Done</button>
+      </div>
+    </div>
+  </dialog>
+
   <!-- Help dialog -->
   <dialog class="dialog" id="help-dialog">
     <div>
@@ -375,6 +387,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
   <script src="js/parse.js"></script>
   <script src="js/sync.js"></script>
+  <script src="js/clocks.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>

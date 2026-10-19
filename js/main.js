@@ -20,7 +20,7 @@
 
   // ---------- State ----------
   function blank() {
-    return { periods: [], activePeriodId: null, tasks: [], running: null, runningAt: 0, learn: {}, deleted: {}, settings: { theme: 'system', pomodoro: false } };
+    return { periods: [], activePeriodId: null, tasks: [], running: null, runningAt: 0, learn: {}, deleted: {}, settings: { theme: 'system', pomodoro: false, clocks: {} } };
   }
 
   function normalizePeriod(p) {
@@ -342,48 +342,13 @@
   }
 
   // ---------- The clock ----------
-  // The original Tempo ring: a thin accent ring that empties as time is used, with the
-  // countdown (H:MM:SS) in the middle. Built with the target document's own createElementNS
-  // so the pop-out window and clock-only mode reuse it.
-  var SVGNS = 'http://www.w3.org/2000/svg';
-  var F_MONO = 'Geist Mono, ui-monospace, monospace';
-  var DIAL = { cx: 110, cy: 110, r: 96 };
-  var DIAL_LEN = 2 * Math.PI * DIAL.r;
-
-  function sv(parent, tag, attrs, text) {
-    var n = (parent.ownerDocument || document).createElementNS(SVGNS, tag), style = '';
-    for (var k in attrs) {
-      // Presentation attributes can't take var(), so token colours go through style.
-      if (/^(fill|stroke)$/.test(k) && String(attrs[k]).indexOf('var(') === 0) style += k + ':' + attrs[k] + ';';
-      else n.setAttribute(k, attrs[k]);
-    }
-    if (style) n.setAttribute('style', style);
-    if (text != null) n.textContent = text;
-    parent.appendChild(n);
-    return n;
-  }
-
-  function buildChrono(svg) {
-    while (svg.firstChild) svg.removeChild(svg.firstChild);
-    var cx = DIAL.cx, cy = DIAL.cy;
-    sv(svg, 'circle', { cx: cx, cy: cy, r: DIAL.r, fill: 'none', stroke: 'var(--line)', 'stroke-width': 10 });
-    var ring = sv(svg, 'circle', { class: 'dial-ring', cx: cx, cy: cy, r: DIAL.r, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 10,
-      'stroke-linecap': 'round', 'stroke-dasharray': DIAL_LEN.toFixed(2), 'stroke-dashoffset': 0, transform: 'rotate(-90 ' + cx + ' ' + cy + ')' });
-    var label = sv(svg, 'text', { x: cx, y: 82, 'text-anchor': 'middle', 'font-family': F_MONO, 'font-size': 9.5, 'font-weight': 500, 'letter-spacing': '.06em', fill: 'var(--ink-3)' }, 'LEFT TO WORK');
-    var time = sv(svg, 'text', { x: cx, y: 124, 'text-anchor': 'middle', 'font-family': F_MONO, 'font-size': 36, 'letter-spacing': '-1', fill: 'var(--ink)' }, '0:00:00');
-    var sub = sv(svg, 'text', { x: cx, y: 150, 'text-anchor': 'middle', 'font-family': 'Geist, system-ui, sans-serif', 'font-size': 11.5, fill: 'var(--ink-2)' }, '');
-
-    // s: { left (sec, may be negative), budget (sec), label, sub }
-    return function update(s) {
-      var over = s.left < 0;
-      var frac = s.budget > 0 ? Math.min(Math.max(s.left / s.budget, 0), 1) : 0;
-      ring.setAttribute('stroke-dashoffset', (DIAL_LEN * (1 - frac)).toFixed(2));
-      ring.setAttribute('style', 'stroke:' + (over ? 'var(--bad)' : 'var(--accent)'));
-      label.textContent = over ? 'OVER BUDGET' : (s.label || 'LEFT TO WORK');
-      time.textContent = (over ? '+' : '') + fmtClock(Math.abs(s.left) * 1000);
-      time.setAttribute('style', 'fill:' + (over ? 'var(--bad)' : 'var(--ink)'));
-      sub.textContent = s.sub || '';
-    };
+  // The faces live in js/clocks.js (TempoClocks). Each place (main panel, clock-only mode,
+  // pop-out) shows the face picked for it in Clock style; the default is one dot a minute.
+  var CLOCK_PLACES = { main: 'Main clock', mode: 'Clock-only screen', pop: 'Pop-out' };
+  function clockFace(place) { var c = state.settings.clocks || {}; return c[place] || 'dots'; }
+  function buildChrono(host, place) {
+    if (!window.TempoClocks) return function () {};
+    return TempoClocks.mount(host, clockFace(place));
   }
 
   function chronoState(p, m, cur) {
@@ -391,7 +356,7 @@
     var sub = m.session && m.auto ? fmt(m.remaining) + ' work' + (m.breaksLeft ? ' + ' + fmt(m.breaksLeft) + ' breaks' : '')
       : 'of ' + fmt(m.budget) + ' · ' + fmt(m.used) + ' worked';
     return {
-      left: m.left * 60, budget: m.budget * 60, label: label, sub: sub,
+      left: m.left * 60, budget: m.budget * 60, label: label || 'LEFT TO WORK', sub: sub, running: !!(cur && cur.running),
       task: cur ? { spent: loggedMs(cur.task) / 1000, est: cur.task.estMin * 60 } : null
     };
   }
@@ -404,13 +369,12 @@
 
   var mainChrono = null;
   function renderClock(p, m) {
-    var svg = $('#chrono');
+    var svg = $('#clock');
     if (!svg) return;
-    if (!mainChrono) mainChrono = buildChrono(svg);
+    if (!mainChrono) mainChrono = buildChrono(svg, 'main');
     var cur = currentTask(p), cs = chronoState(p, m, cur);
     mainChrono(cs);
-    var wrap = $('#clock');
-    if (wrap) wrap.classList.toggle('is-running', !!(cur && cur.running));
+    svg.classList.toggle('is-running', !!(cur && cur.running));
     var over = m.left < 0;
     svg.setAttribute('aria-label', (over ? fmt(-m.left) + ' over' : fmt(m.left) + (m.session && m.auto ? ' to finish' : ' left')) +
       (cur ? '. ' + (cur.running ? 'Working on ' : 'Up next: ') + cur.task.title : ''));
@@ -1240,7 +1204,7 @@
   var mini = { win: null, video: null, canvas: null };
   var MINI_HTML =
     '<div class="mini" id="mini">' +
-      '<svg class="mini-chrono" id="mini-chrono" viewBox="0 0 220 220" aria-hidden="true"></svg>' +
+      '<div class="mini-chrono" id="mini-chrono" aria-hidden="true"></div>' +
       '<div class="mini-side">' +
         '<span class="now-label" data-m="state"></span>' +
         '<span class="mini-title" data-m="title"></span>' +
@@ -1275,7 +1239,7 @@
     doc.title = 'Tempo';
     doc.body.className = 'mini-body';
     doc.body.innerHTML = MINI_HTML;
-    mini.chrono = buildChrono(doc.getElementById('mini-chrono'));
+    mini.chrono = buildChrono(doc.getElementById('mini-chrono'), 'pop');
     syncMiniTheme();
     doc.addEventListener('click', function (e) { var b = e.target.closest('[data-mini]'); if (b) miniAction(b.dataset.mini); });
     doc.addEventListener('keydown', function (e) { if (e.key === ' ') { e.preventDefault(); miniAction('toggle'); } });
@@ -1373,7 +1337,7 @@
   function openClockMode() {
     var box = $('#clockmode'), p = activePeriod();
     if (!box || !p) return;
-    if (!cm.chrono) cm.chrono = buildChrono($('#cm-chrono'));
+    if (!cm.chrono) cm.chrono = buildChrono($('#cm-chrono'), 'mode');
     box.hidden = false;
     document.body.style.overflow = 'hidden';
     try { if (document.documentElement.requestFullscreen && !document.fullscreenElement) document.documentElement.requestFullscreen().then(function () { cm.fs = true; }).catch(function () {}); } catch (e) { /* optional */ }
@@ -1411,6 +1375,43 @@
     if (btn) { btn.textContent = cur && cur.running ? 'Pause' : 'Start'; btn.disabled = !cur; }
     var svg = $('#cm-chrono');
     if (svg) svg.setAttribute('aria-label', text);
+  }
+
+  // ---------- Clock style ----------
+  // Pick a face per place. Every tile is a live preview drawn with the active period's numbers.
+  var clockUI = { place: 'main' };
+  function openClockStyle() {
+    var dlg = $('#clock-dialog');
+    if (!dlg || !window.TempoClocks) return;
+    renderClockStyle();
+    dlg.showModal();
+  }
+  function renderClockStyle() {
+    var places = $('#clock-places'), grid = $('#clock-grid');
+    if (!places || !grid) return;
+    places.innerHTML = Object.keys(CLOCK_PLACES).map(function (k) {
+      return '<button type="button" role="tab" class="place-btn' + (k === clockUI.place ? ' is-on' : '') + '" aria-selected="' + (k === clockUI.place) + '" data-place="' + k + '">' + CLOCK_PLACES[k] + '</button>';
+    }).join('');
+    var p = activePeriod(), m = p && metrics(p), cur = p && currentTask(p);
+    var data = p ? chronoState(p, m, cur) : { left: 4796, budget: 7200, label: 'LEFT TO WORK', sub: 'of 2h · 40m worked' };
+    var chosen = clockFace(clockUI.place);
+    grid.innerHTML = TempoClocks.faces.map(function (f) {
+      return '<button type="button" role="option" class="clock-tile' + (f.id === chosen ? ' is-on' : '') + '" aria-selected="' + (f.id === chosen) + '" data-face="' + f.id + '">' +
+        '<span class="clock-prev" data-prev="' + f.id + '"></span><span class="clock-name">' + esc(f.name) + '</span><span class="clock-note">' + esc(f.note) + '</span></button>';
+    }).join('');
+    $$('[data-prev]', grid).forEach(function (host) { TempoClocks.mount(host, host.dataset.prev)(data); });
+  }
+  function chooseClock(id) {
+    state.settings.clocks = Object.assign({}, state.settings.clocks, (function (o) { o[clockUI.place] = id; return o; })({}));
+    save({ quiet: true });
+    if (clockUI.place === 'main') mainChrono = null;
+    if (clockUI.place === 'mode') cm.chrono = null;
+    if (clockUI.place === 'pop' && mini.win) mini.chrono = buildChrono(mini.win.document.getElementById('mini-chrono'), 'pop');
+    if (clockUI.place === 'mode' && clockModeOpen()) cm.chrono = buildChrono($('#cm-chrono'), 'mode');
+    $$('.clock-tile').forEach(function (b) { var on = b.dataset.face === id; b.classList.toggle('is-on', on); b.setAttribute('aria-selected', on); });
+    render();
+    var f = TempoClocks.faces.filter(function (x) { return x.id === id; })[0];
+    toast(CLOCK_PLACES[clockUI.place] + ': ' + (f ? f.name : id));
   }
 
   // ---------- Focus mode ----------
@@ -1718,6 +1719,7 @@
     else if (action === 'edit-session') { var s = activePeriod(); if (s && isSession(s)) openSessionDialog(s); }
     else if (action === 'close-period') { if (activePeriod()) openCloseDialog(); else toast('Nothing to close'); }
     else if (action === 'clock-mode') openClockMode();
+    else if (action === 'clock-style') openClockStyle();
     else if (action === 'export') exportJSON();
     else if (action === 'import') { var inp = $('#import-file'); if (inp) inp.click(); }
     else if (action === 'sample') loadSample();
@@ -1865,6 +1867,9 @@
     on('#clockmode', 'mousemove', clockModeActivity);
     on('#clockmode', 'touchstart', clockModeActivity);
     on('#clock', 'dblclick', openClockMode);
+    on('#clock-places', 'click', function (e) { var b = e.target.closest('[data-place]'); if (b) { clockUI.place = b.dataset.place; renderClockStyle(); } });
+    on('#clock-grid', 'click', function (e) { var b = e.target.closest('[data-face]'); if (b) chooseClock(b.dataset.face); });
+    on('#clock-dialog', 'close', function () { var g = $('#clock-grid'); if (g) g.innerHTML = ''; });
     // In full screen the browser takes Esc to leave it; leaving full screen also leaves clock mode.
     document.addEventListener('fullscreenchange', function () { if (!document.fullscreenElement && cm.fs) { cm.fs = false; closeClockMode(); } });
     on('#focus-toggle', 'click', function () { if (ui.pomo && ui.pomo.phase === 'break') ui.pomo = null; focusToggle(); });
