@@ -101,12 +101,33 @@
 
     { id: 'flip', name: 'Flip clock', note: 'Split-flap cards for hours, minutes and seconds that flip as they change.',
       build: function (k) {
-        var box = k.h('div', 'tc-flip'), cards = [];
-        ['', 'c', '', '', 'c', 'sm', 'sm'].forEach(function (c) { if (c === 'c') k.h('span', 'colon', box, ':'); else cards.push(k.h('div', 'fc ' + c, box)); });
+        var box = k.h('div', 'tc-flip'), win = box.ownerDocument.defaultView, cards = [];
+        // A real split-flap: the top half of the old digit falls forward, then the bottom
+        // half of the new digit lands. Static halves underneath show new-top and old-bottom.
+        function card(cls) {
+          var c = k.h('div', 'fc ' + cls, box, '<span class="half top"><b></b></span><span class="half bot"><b></b></span>' +
+            '<span class="flap ftop"><b></b></span><span class="flap fbot"><b></b></span>');
+          var q = function (sel) { return c.querySelector(sel + ' b'); };
+          return { el: c, top: q('.top'), bot: q('.bot'), ftop: q('.ftop'), fbot: q('.fbot'), v: null, timer: 0 };
+        }
+        function set(c, v) {
+          if (c.v === v) return;
+          var old = c.v; c.v = v;
+          c.el.style.setProperty('--n', v.length);
+          win.clearTimeout(c.timer);
+          c.el.classList.remove('go');
+          if (old == null) { c.top.textContent = c.bot.textContent = v; return; }
+          c.top.textContent = v; c.fbot.textContent = v;
+          c.ftop.textContent = old; c.bot.textContent = old;
+          void c.el.offsetWidth;
+          c.el.classList.add('go');
+          c.timer = win.setTimeout(function () { c.bot.textContent = v; c.el.classList.remove('go'); }, 560);
+        }
+        ['', 'c', '', '', 'c', 'sm', 'sm'].forEach(function (c) { if (c === 'c') k.h('span', 'colon', box, ':'); else cards.push(card(c)); });
         return function (d) {
           var a = Math.abs(Math.floor(d.left)), mm = pad(Math.floor(a / 60) % 60), ss = pad(a % 60);
           var v = [(d.over ? '+' : '') + Math.floor(a / 3600), mm[0], mm[1], ss[0], ss[1]];
-          cards.forEach(function (c, i) { if (c.textContent !== v[i]) { c.textContent = v[i]; c.classList.remove('go'); void c.offsetWidth; c.classList.add('go'); } });
+          cards.forEach(function (c, i) { set(c, v[i]); });
         };
       } },
 
