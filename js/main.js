@@ -1363,6 +1363,42 @@
     clearTimeout(cm.idle);
     cm.idle = setTimeout(function () { box.classList.add('is-idle'); }, 2500);
   }
+  // ---------- Timer mode ----------
+  // A separate full-screen overlay of simple timers (js/timers.js). It doesn't touch the planner state.
+  var tmode = { fs: false };
+  function timerModeOpen() { var b = $('#timers'); return !!b && !b.hidden; }
+  function openTimerMode() {
+    if (!window.TempoTimers) return;
+    var box = $('#timers'), grid = $('#tm-grid');
+    if (!box || !grid) return;
+    if (ui.focusId) closeFocus();
+    closeClockMode();
+    closeMenus();
+    box.hidden = false;
+    document.body.style.overflow = 'hidden';
+    TempoTimers.open(grid);
+    try { history.replaceState(null, '', '#timer'); } catch (e) { /* optional */ }
+  }
+  function closeTimerMode() {
+    var box = $('#timers');
+    if (!box || box.hidden) return;
+    box.hidden = true;
+    document.body.style.overflow = '';
+    if (window.TempoTimers) TempoTimers.close();
+    if (tmode.fs) {
+      tmode.fs = false;
+      try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(function () {}); } catch (e) { /* ignore */ }
+    }
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* optional */ }
+    render();
+  }
+  function toggleTimerFullscreen() {
+    try {
+      if (document.fullscreenElement) { tmode.fs = false; if (document.exitFullscreen) document.exitFullscreen().catch(function () {}); }
+      else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().then(function () { tmode.fs = true; }).catch(function () {});
+    } catch (e) { /* optional */ }
+  }
+
   function renderClockMode(p, m, cs, cur) {
     if (!cm.chrono || !clockModeOpen()) return;
     cm.chrono(cs);
@@ -1719,6 +1755,7 @@
     else if (action === 'edit-session') { var s = activePeriod(); if (s && isSession(s)) openSessionDialog(s); }
     else if (action === 'close-period') { if (activePeriod()) openCloseDialog(); else toast('Nothing to close'); }
     else if (action === 'clock-mode') openClockMode();
+    else if (action === 'timer-mode') openTimerMode();
     else if (action === 'clock-style') openClockStyle();
     else if (action === 'export') exportJSON();
     else if (action === 'import') { var inp = $('#import-file'); if (inp) inp.click(); }
@@ -1864,6 +1901,13 @@
 
     on('#cm-exit', 'click', closeClockMode);
     on('#cm-toggle', 'click', function () { var p = activePeriod(), cur = p && currentTask(p); if (cur) toggleTimer(cur.task.id); clockModeActivity(); });
+    on('#tm-add', 'click', function () { if (window.TempoTimers) TempoTimers.add(); });
+    on('#tm-exit', 'click', closeTimerMode);
+    on('#tm-full', 'click', toggleTimerFullscreen);
+    window.addEventListener('hashchange', function () {
+      if (location.hash === '#timer') { if (!timerModeOpen()) openTimerMode(); }
+      else if (timerModeOpen()) closeTimerMode();
+    });
     on('#clockmode', 'mousemove', clockModeActivity);
     on('#clockmode', 'touchstart', clockModeActivity);
     on('#clock', 'dblclick', openClockMode);
@@ -1871,6 +1915,7 @@
     on('#clock-grid', 'click', function (e) { var b = e.target.closest('[data-face]'); if (b) chooseClock(b.dataset.face); });
     on('#clock-dialog', 'close', function () { var g = $('#clock-grid'); if (g) g.innerHTML = ''; });
     // In full screen the browser takes Esc to leave it; leaving full screen also leaves clock mode.
+    document.addEventListener('fullscreenchange', function () { if (!document.fullscreenElement) tmode.fs = false; });
     document.addEventListener('fullscreenchange', function () { if (!document.fullscreenElement && cm.fs) { cm.fs = false; closeClockMode(); } });
     on('#focus-toggle', 'click', function () { if (ui.pomo && ui.pomo.phase === 'break') ui.pomo = null; focusToggle(); });
     on('#focus-done', 'click', function () { var id = ui.focusId; closeFocus(); setDone(id, true); });
@@ -1887,6 +1932,15 @@
 
     document.addEventListener('keydown', function (e) {
       var focusOpen = !!ui.focusId;
+      if (timerModeOpen()) {
+        var editing = window.TempoTimers && TempoTimers.isEditing();
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        if (e.key === 'Escape') { e.preventDefault(); if (editing) { if (e.target && e.target.blur) e.target.blur(); } else closeTimerMode(); }
+        else if (editing) return;
+        else if (e.key === ' ' && !(e.target && e.target.closest && e.target.closest('button'))) { e.preventDefault(); if (window.TempoTimers) TempoTimers.toggleFirst(); }
+        else if (e.key === 'a') { e.preventDefault(); if (window.TempoTimers) TempoTimers.add(); }
+        return;
+      }
       if (clockModeOpen()) {
         if (e.key === 'Escape' || e.key === 'c') { e.preventDefault(); closeClockMode(); }
         else if (e.key === ' ') { e.preventDefault(); var cp = activePeriod(), cc = cp && currentTask(cp); if (cc) toggleTimer(cc.task.id); }
@@ -1909,6 +1963,7 @@
       else if (e.key === 'f' && p) { e.preventDefault(); openFocus(); }
       else if (e.key === 'p' && p) togglePopout();
       else if (e.key === 'c' && p) openClockMode();
+      else if (e.key === 'm') openTimerMode();
       else if (e.key === 't') cycleTheme();
       else if (e.key === '?') { var h = $('#help-dialog'); if (h) h.showModal(); }
     });
@@ -1944,4 +1999,5 @@
   // (Clock-only mode is redrawn by tick() and this loop through renderClock.)
   setInterval(function () { var p = activePeriod(); if (p && isSession(p) && !p.closed && !state.running) renderClock(p, metrics(p)); }, 1000);
   tick();
+  if (location.hash === '#timer') openTimerMode();
 })();

@@ -2,7 +2,7 @@
 
 Tempo is a **personal productivity app**, not a marketing site. Live at **https://tempo.caiomsi.com**
 (GitHub Pages, repo `caiomsi/Tempo`). It **has Node tests + CI**: run `node test/parse.test.js`
-and `node test/sync.test.js` before pushing. Accounts and sync use **Supabase project `tempo`**
+`node test/sync.test.js` and `node test/timers.test.js` before pushing. Accounts and sync use **Supabase project `tempo`**
 (`yjvkfzbjiivsktyfronh`, MSI Studio org, us-east-1). See the root `../CLAUDE.md` for shared
 conventions.
 
@@ -10,7 +10,7 @@ conventions.
 
 - **Left panel (the clock):** the face comes from `js/clocks.js` (`TempoClocks`), which holds 19
   faces (one dot a minute, ring, red disc, flip clock, hourglass, ruler, nixie, LCD, and others).
-  `TempoClocks.mount(host, id)` returns `update({ left, budget, label, sub, running })`.
+  `TempoClocks.mount(host, id)` returns `update({ left, budget, label, overLabel, sub, running })`.
   - **Clock style** (in the ⋯ menu) picks a face separately for the main panel, clock-only mode and
     the pop-out. The picks are saved in `state.settings.clocks` (per device). The default everywhere
     is `dots`, by Caio's choice (2026-10-19).
@@ -32,6 +32,17 @@ conventions.
   - Controls fade after 2.5s idle, and it requests full screen plus a screen wake lock where
     allowed.
   - Esc, `c`, or leaving full screen closes it. `renderClockMode` runs from `renderClock`.
+- **Timer mode** (the stopwatch button in the top bar, the menu, `m`, or the URL `#timer`): a full-screen
+  overlay `#timers`, separate from the planner (no tasks or periods, works with no data).
+  - `js/timers.js` (`TempoTimers`) owns the timers: up to 4, each with its own face from `TempoClocks`,
+    time (typed like `25m`, `1h30`, `until 6pm`, or a preset chip), optional name, Start/Pause, Reset.
+    The first defaults to `dots`, then `flip`, `ring`, `disc`.
+  - A timer that reaches zero keeps counting into overtime (red, `+0:01:12`), chimes once, and sends a
+    notification if permission was already granted.
+  - Stored per device in `localStorage` key `tempo:timers` (running timers keep an absolute `endsAt`,
+    so they survive reloads). Not synced.
+  - `main.js` only wires it up: `openTimerMode`/`closeTimerMode`, the `timer-mode` action, `m`, Esc, Space
+    (start/pause the first timer), `a` (add), the `#timer` hash, and a full-screen button.
 - **Right panel ("board"):** a plain-language brain-dump input with dictation, and
   the tasks grouped by **category**.
 - The cutoff is computed globally. Open tasks are ranked by priority, then `order`,
@@ -50,13 +61,14 @@ Speech API) needs `localhost` or https, not `file://`.
 ## Structure
 
 ```
-index.html            shell: clock panel, board, focus overlay, dialogs (week, task, close, session, end-session, auth, help)
+index.html            shell: clock panel, board, focus overlay, timer mode, dialogs (week, task, close, session, end-session, auth, help)
 css/style.css         paper/ink tokens + per-category colours (--c-*) + chronograph tokens (--ch-*), light/dark
 js/parse.js           TempoParse: plain language → tasks, categorizer, time estimates. Pure, no DOM (Node-testable)
 js/clocks.js          TempoClocks: the clock faces + mount()
+js/timers.js          TempoTimers: timer mode (simple timers, overtime, storage) + pure helpers (Node-testable)
 js/sync.js            TempoSync: Supabase auth + saving + mergeDocs (pure, Node-testable)
 js/main.js            the app (one IIFE): state, render, chronograph, sessions, preview, pop-out, focus
-test/*.test.js        plain-Node tests (assert); .github/workflows/test.yml runs them on push
+test/*.test.js        plain-Node tests (assert; parse, sync, timers); .github/workflows/test.yml runs them on push
 favicon.svg, apple-touch-icon.png, img/  logo mark, app icons, og-image (rendered from the SVGs with headless Chrome)
 manifest.webmanifest  add-to-home-screen on phones
 ```

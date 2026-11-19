@@ -17,3 +17,5 @@ jobs:
         run: node test/parse.test.js
       - name: Sync merge tests
         run: node test/sync.test.js
+      - name: Timer tests
+        run: node test/timers.test.js

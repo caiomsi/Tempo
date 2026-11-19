@@ -82,7 +82,7 @@
         return function (d) {
           ring.setAttribute('stroke-dashoffset', (C * (1 - d.frac)).toFixed(2));
           ring.style.stroke = d.over ? 'var(--bad)' : 'var(--accent)';
-          label.textContent = d.over ? 'OVER BUDGET' : d.label;
+          label.textContent = d.over ? d.overLabel : d.label;
           t.textContent = hms(d.left); t.style.fill = d.over ? 'var(--bad)' : 'var(--ink)';
           sub.textContent = d.sub || '';
         };
@@ -139,7 +139,7 @@
           big.innerHTML = (d.over ? '+' : '') + Math.floor(a / 3600) + ':' + pad(Math.floor(a / 60) % 60) + '<small>' + pad(a % 60) + '</small>';
           big.style.color = d.over ? 'var(--bad)' : '';
           hair.firstChild.style.width = (d.frac * 100) + '%';
-          cap.firstChild.textContent = d.over ? 'Over budget' : d.label;
+          cap.firstChild.textContent = d.over ? d.overLabel : d.label;
           cap.lastChild.textContent = 'of ' + hm(d.budget);
         };
       } },
@@ -245,7 +245,7 @@
           }
           var digits = str.replace(/:/g, '');
           for (var j = 0; j < tubes.length; j++) if (tubes[j].textContent !== digits[j]) tubes[j].textContent = digits[j];
-          lbl.textContent = d.over ? 'OVER BUDGET' : d.label;
+          lbl.textContent = d.over ? d.overLabel : d.label;
         };
       } },
 
@@ -385,7 +385,7 @@
     function full(d) {
       var b = Math.max(d.budget || 0, 1), left = d.left || 0;
       return { left: left, budget: b, frac: Math.min(Math.max(left / b, 0), 1), used: Math.min(Math.max(1 - left / b, 0), 1),
-        over: left < 0, label: d.label || 'LEFT TO WORK', sub: d.sub || '', running: !!d.running, t: win.performance.now() };
+        over: left < 0, label: d.label || 'LEFT TO WORK', overLabel: d.overLabel || 'OVER BUDGET', sub: d.sub || '', running: !!d.running, t: win.performance.now() };
     }
     var token = host._tcToken = {};
     function loop() {

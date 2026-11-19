@@ -11,6 +11,7 @@ It then checks them against the hours you actually have.
 - Whatever doesn't fit your remaining hours is labelled **won't fit**.
 - Timers, focus mode with optional pomodoro, a pace check, and personal
   estimate-accuracy tracking.
+- **Timer mode** (`m`, or open `/#timer`): just timers. Up to four on screen, each in its own clock style, with a time you type. They keep counting past zero.
 - **Study sessions**: start one from your week or with a fresh list. Tempo estimates how long it will take, breaks included, and when you'll be done.
 - **Accounts**: sign in and your tasks are saved to your account, so they're the same on your phone and computer. On a phone, use Add to Home Screen.
 - Without an account, everything stays in this browser.

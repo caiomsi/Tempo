@@ -39,6 +39,9 @@
       <div class="topbar-actions">
         <label class="sr-only" for="period-select">Period</label>
         <select id="period-select" class="period-select" hidden></select>
+        <button class="icon-btn" type="button" data-action="timer-mode" aria-label="Timer mode" title="Timer mode (m)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 1.5h6v2H9z"/><path fill-rule="evenodd" d="M12 5a8.5 8.5 0 1 1 0 17 8.5 8.5 0 0 1 0-17zm0 2a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13z"/><path d="M11 9h2v5.2l-1 1-1-1z"/></svg>
+        </button>
         <button class="icon-btn theme-btn" id="theme-btn" type="button" aria-label="Switch theme" title="Theme (t)"></button>
         <details class="menu account" id="account-menu">
           <summary class="account-btn" id="account-btn" aria-label="Sign in to sync your tasks">
@@ -63,6 +66,7 @@
             <button type="button" data-action="close-period" role="menuitem">Close / end &amp; review…</button>
             <hr>
             <button type="button" data-action="clock-mode" role="menuitem">Clock only (full screen)</button>
+            <button type="button" data-action="timer-mode" role="menuitem">Timer mode</button>
             <button type="button" data-action="clock-style" role="menuitem">Clock style…</button>
             <hr>
             <button type="button" data-action="export" role="menuitem">Export backup (JSON)</button>
@@ -177,6 +181,20 @@
       <button class="btn btn-primary btn-sm" type="button" id="cm-toggle">Start</button>
       <button class="btn btn-sm" type="button" id="cm-exit">Exit <kbd>Esc</kbd></button>
     </div>
+  </section>
+
+  <!-- Timer mode -->
+  <section class="timers" id="timers" hidden role="dialog" aria-modal="true" aria-label="Timers">
+    <header class="tm-bar">
+      <h2 class="tm-title">Timers</h2>
+      <span class="tm-spacer"></span>
+      <button class="btn btn-sm" type="button" id="tm-add">+ Add timer</button>
+      <button class="icon-btn" type="button" id="tm-full" aria-label="Full screen" title="Full screen">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V5a1 1 0 0 1 1-1h4v2H6v3zm11-5h4a1 1 0 0 1 1 1v4h-2V6h-3zM4 15h2v3h3v2H5a1 1 0 0 1-1-1zm14 0h2v4a1 1 0 0 1-1 1h-4v-2h3z"/><circle cx="12" cy="12" r="3.2"/></svg>
+      </button>
+      <button class="btn btn-sm" type="button" id="tm-exit">Back to planner <kbd>Esc</kbd></button>
+    </header>
+    <div class="tm-grid" id="tm-grid"></div>
   </section>
 
   <!-- Focus mode -->
@@ -357,6 +375,7 @@
         <tr><td><kbd>f</kbd></td><td>Focus on the top task</td></tr>
         <tr><td><kbd>/</kbd></td><td>Search</td></tr>
         <tr><td><kbd>c</kbd></td><td>Clock only: full screen, just the time left</td></tr>
+        <tr><td><kbd>m</kbd></td><td>Timer mode: simple timers, up to four, each in its own style</td></tr>
         <tr><td><kbd>p</kbd></td><td>Pop out a floating timer that stays on top of other apps</td></tr>
         <tr><td><kbd>t</kbd></td><td>Switch between light and dark mode</td></tr>
         <tr><td><kbd>?</kbd></td><td>This help</td></tr>
@@ -388,6 +407,7 @@
   <script src="js/parse.js"></script>
   <script src="js/sync.js"></script>
   <script src="js/clocks.js"></script>
+  <script src="js/timers.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>
